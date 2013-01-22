@@ -1,17 +1,19 @@
 (ns com.mccaffrey.nlve.ImageEffectActivity
-  (:use neko.find-view)
-  (:use neko.listeners.view)
-  (:use neko.log)
   (:gen-class :main false
               :extends android.app.Activity
               :exposes-methods {onCreate superOnCreate})
-  (:import [com.mccaffrey.nlve R$layout])
-  (:import [android.graphics SurfaceTexture])
-  (:import [android.hardware Camera])
-  (:import [android.media.effect EffectContext EffectFactory])
-  (:import [android.opengl GLES20 GLES10 GLES11Ext])
-  (:import [android.view Surface])
-  (:import [javax.microedition.khronos.egl EGLContext EGL10 EGL]))
+  (:import [android R]
+           [android.app Activity]
+           [android.graphics SurfaceTexture]
+           [android.hardware Camera]
+           [android.media.effect EffectContext EffectFactory]
+           [android.opengl GLSurfaceView GLES20 GLES10 GLES11Ext]
+           [android.os Bundle]
+           [android.view Surface]
+           [com.mccaffrey.nlve R$layout]
+           [javax.microedition.khronos.egl EGLContext EGL10 EGL])
+  (:use [neko context find-view log activity]
+        [neko.listeners view]))
 
 (deflog "ImageEffectActivity")
 
@@ -91,9 +93,15 @@
 ;            [activity features]
 ;            [*activity* (cons activity features)])
 
-(defn is-egl?
-  [maybe-egl]
-  (instance? EGL maybe-egl))
+(def 
+  ^{:doc "The current EGL to operate on"
+    :dynamic true}
+  *egl*)
+
+(def 
+  ^{:doc "The current EGL display to operate on"
+    :dynamic true}
+  *egl-display*)
 
 (defmacro with-egl
   "Evaluates body such that egl is bound to *egl*"
@@ -102,13 +110,21 @@
      (binding [*egl* egl#]
        ~@body)))
 
+(defmacro with-egl-display
+  "Evaluates body such that egl is bound to *egl*"
+  [egl-display & body]
+  `(let [egl-display# ~egl-display]
+     (binding [*egl-display* egl-display#]
+       ~@body)))
+
 (defn egl-attrib-list
   [attrib-map]
   (int-array (conj (vec (flatten attrib-map)) EGL10/EGL_NONE)))
 
 ; if egl isn't specified, *egl* is checked
 (defn egl-choose-config
-  [egl-display attrib-map & {egl :egl :or *egl*}]
+  [attrib-map & {:keys [egl egl-display]
+                 :or {egl *egl* egl-display *egl-display*}}]
   (let [max-configs 10
         config-arr (int-array max-configs)
         num-config (int-array 1)]
@@ -128,63 +144,94 @@
   [attrib-map]
   (with-egl
     (EGLContext/getEGL)
-    (let [display (.eglGetDisplay *egl* EGL10/EGL_DEFAULT_DISPLAY)]
+    (with-egl-display 
+      (.eglGetDisplay *egl* EGL10/EGL_DEFAULT_DISPLAY)
       (.eglInitialize
         *egl*
-        display
+        *egl-display*
         (int-array 2))
       (.eglCreateContext
         *egl*
-        display
-        ((egl-choose-config *egl* display attrib-map) 0)
+        *egl-display*
+        ((egl-choose-config attrib-map) 0)
         EGL10/EGL_NO_CONTEXT
         (egl-attrib-list {EGL_CONTEXT_CLIENT_VERSION 2})))))
 
-(defn -onCreate
-  [this bundle]
-  (doto this
-    (.superOnCreate bundle)
-    (.setContentView R$layout/preview))
-  (doto (find-view this :preview-view)
-        (.setSurfaceTextureListener
-          (let [egl-ctx
-                (init-egl
-                  {EGL10/EGL_SURFACE_TYPE EGL10/EGL_WINDOW_BIT,
-                   EGL10/EGL_RENDERABLE_TYPE EGL_OPENGL_ES2_BIT})
-              cam-id 0
-              cam (Camera/open cam-id)
-              [w h] (get-preview-size cam)
-              preview-tex (make-texture)
-              display-tex (make-texture)
-              preview-st (SurfaceTexture. preview-tex)
-              effect (.. 
-                       (EffectContext/createWithCurrentGlContext)
-                       (getFactory)
-                       (createEffect EffectFactory/EFFECT_TEMPERATURE))]
-          (.setOnFrameAvailable
-            preview-st
-            (reify android.graphics.SurfaceTexture$OnFrameAvailableListener
-              (onFrameAvailable [_ st]
-                (.apply effect preview-tex w h display-tex))))
-          (reify android.view.TextureView$SurfaceTextureListener
-            (onSurfaceTextureAvailable [_ st _ _]
-              (log-i "Setting preview texture for camera")
-              (.applyToGLContext st display-tex)
-              (doto cam
-                (.setPreviewTexture preview-st)
-                (.setDisplayOrientation
-                  (front-facing-camera-correction 
-                    cam-id (get-display-rotation this)))
-                (.startPreview)))
-            (onSurfaceTextureDestroyed [_ st]
-              (true?
-                (doto cam
-                  (.stopPreview)
-                  (.release))))
-            (onSurfaceTextureUpdated [_ _] 
-              nil))))))
+(defn make-preview-renderer
+  []
+  (reify android.opengl.GLSurfaceView$Renderer
+    (onDrawFrame 
+      [_ gl10] 
+      (GLES20/glClearColor 0.8 0.3 0.3 1.0)
+      (GLES20/glClear GLES20/GL_COLOR_BUFFER_BIT))
+    (onSurfaceChanged
+     [_ gl10 w h] )
+    (onSurfaceCreated
+      [_ gl10 egl-cfg] )))
 
-;    (.setContentView R$layout/main))
+(defn -onCreate
+  [^Activity this ^Bundle bundle] 
+  (with-activity
+    this
+    (doto this
+      (.superOnCreate bundle)
+      (.setContentView (get-layout :preview)))
+    (doto (find-view (get-id :preview_surface))
+      (.setEGLContextClientVersion 2)
+      (.setPreserveEGLContextOnPause false) ; start with the more bug-prone mode
+      (.setEGLConfigChooser false) ; no depth
+      (.setRenderer (make-preview-renderer ))
+      (.setRenderMode GLSurfaceView/RENDERMODE_WHEN_DIRTY))))
+
+;  (defn -onCreate
+;    [this bundle]
+;    (log-i "onCreate")
+;    (doto this
+;      (.superOnCreate bundle)
+;      (.setContentView R$layout/preview))
+;    (doto (find-view this :preview-view)
+;      (.setSurfaceTextureListener
+;        (log-i "set st listener")
+;        (let [egl-ctx
+;              (init-egl
+;                {EGL10/EGL_SURFACE_TYPE EGL10/EGL_WINDOW_BIT,
+;                 EGL10/EGL_RENDERABLE_TYPE EGL_OPENGL_ES2_BIT})
+;              cam-id 0
+;              cam (Camera/open cam-id)
+;              [w h] (get-preview-size cam)
+;              preview-tex (make-texture)
+;              display-tex (make-texture)
+;              preview-st (SurfaceTexture. preview-tex)
+;              effect (.. 
+;                       (EffectContext/createWithCurrentGlContext)
+;                       (getFactory)
+;                       (createEffect EffectFactory/EFFECT_TEMPERATURE))]
+;          (.setOnFrameAvailable
+;            (log-i "set preview onFrameAvailable")
+;            preview-st
+;            (reify android.graphics.SurfaceTexture$OnFrameAvailableListener
+;              (onFrameAvailable [_ st]
+;                (log-i "preview frame available")
+;                (.apply effect preview-tex w h display-tex))))
+;          (reify android.view.TextureView$SurfaceTextureListener
+;            (onSurfaceTextureAvailable [_ st _ _]
+;              (log-i "Setting preview texture for camera")
+;              (.applyToGLContext st display-tex)
+;              (doto cam
+;                (.setPreviewTexture preview-st)
+;                (.setDisplayOrientation
+;                  (front-facing-camera-correction 
+;                    cam-id (get-display-rotation this)))
+;                (.startPreview)))
+;            (onSurfaceTextureDestroyed [_ st]
+;              (true?
+;                (doto cam
+;                  (.stopPreview)
+;                  (.release))))
+;            (onSurfaceTextureUpdated [_ _] 
+;              nil)))))))
+
+  ;    (.setContentView R$layout/main))
 ;  (.setOnClickListener
 ;    (find-view this :button-0)
 ;    (on-click-call
