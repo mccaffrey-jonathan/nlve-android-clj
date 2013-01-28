@@ -11,11 +11,74 @@
            [android.os Bundle]
            [android.view Surface]
            [com.mccaffrey.nlve R$layout]
+           [java.nio ByteBuffer IntBuffer ByteOrder]
            [javax.microedition.khronos.egl EGLContext EGL10 EGL])
   (:use [neko context find-view log activity]
         [neko.listeners view]))
 
 (deflog "ImageEffectActivity")
+
+(defmacro ?
+  [val]
+  `(let [x# ~val]
+      (log-i (str '~val '~'is x#))
+      x#))
+
+(defmacro do-let
+  [[binding-form init-expr] & body]
+  `(let [~binding-form ~init-expr]
+     ~@body
+     ~binding-form))
+
+(defmacro n-ints-from-buffer
+  [n body]
+  (let [arr (gensym)
+        gb (gensym)]
+    `(do-let [~arr (int-array ~n)]
+             (let [~gb (IntBuffer/wrap ~arr)]
+               ~(if (seq? body)
+                  `(~@body ~gb)
+                  `(~body ~gb))))))
+
+(def 
+  ^{:doc "The current EGL to operate on"
+    :dynamic true}
+  *program*)
+
+(def 
+  ^{:doc "The current EGL to operate on"
+    :dynamic true}
+  *egl*)
+
+(def 
+  ^{:doc "The current EGL display to operate on"
+    :dynamic true}
+  *egl-display*)
+
+(def 
+  ^{:doc "Log GL compilation and linking errors."
+    :dynamic true}
+  *debug-gl-shader-log* true)
+
+
+(def 
+  ^{:doc "Shrink fs rects to 3/4ths size of debugging"
+    :dynamic true}
+  *debug-shrink-fs-rects* true)
+
+(defn on-frame-available-call
+  "Create an SurfaceTexture$OnFrameAvailableListener from a handler-fn."
+  [handler-fn]
+  {:pre  [(fn? handler-fn)]
+   :post [(instance? android.graphics.SurfaceTexture$OnFrameAvailableListener %)]}
+  (reify android.graphics.SurfaceTexture$OnFrameAvailableListener
+    (onFrameAvailable [this surface-texture]
+      (boolean (handler-fn surface-texture)))))
+
+(defmacro on-frame-available
+  [& body]
+  `(on-frame-available-call
+     (fn [~'surface-texture] ~@body)))
 
 (defn get-display-rotation
   [activity]
@@ -45,6 +108,54 @@
       :default
       (mod (+ (- (.orientation info) degrees) 360) 360))))
 
+(def float-sz
+  "Size in bytes of a floating point value"
+   4)
+
+(def int-sz
+  "Size in bytes of an integer value"
+
+  4)
+
+(def ubyte-sz
+  "Size in bytes of an unsigned-byte value.  I know it's obvious."
+  1)
+
+(defn ubyte-ify
+  "Convert an numeric type to a byte in java, and clamp/shift the value
+  appropriately so that when the 2's-complement signed byte is interpreted as an
+  unsigned byte, it'll be the original value clamped to 0-255.
+
+  Lack of unsigned bytes is a dubious Java design decision."
+  [num]
+  {:pre [(<=  num 255)
+         (>= num 0)]
+   :post [(instance? java.lang.Byte %)]}
+  (byte (if (>= num 128) (- num 128) num)))
+
+(defn vec-to-float-buffer
+  [in]
+  (doto (.asFloatBuffer
+          (doto (ByteBuffer/allocateDirect (* (count in) float-sz))
+            (.order (ByteOrder/nativeOrder))))
+    (.put (float-array in))
+    (.position 0)))
+
+
+(defn vec-to-ubyte-buffer
+  [in]
+  (doto (ByteBuffer/allocateDirect (* (count in) ubyte-sz))
+    (.order (ByteOrder/nativeOrder))
+    (.put (byte-array (map ubyte-ify in)))
+    (.position 0)))
+
+(defn setup-attrib
+  [kw]
+  (log-i (str kw))
+  (GLES20/glEnableVertexAttribArray (:location kw))
+  (apply #(GLES20/glVertexAttribPointer %1 %2 %3 %4 %5 %6)
+         ((juxt :location :size :type :norm :stride :buffer) kw)))
+
 (defn gen-texture
   []
   (let [textures (make-array Integer/TYPE 1)]
@@ -52,15 +163,52 @@
     (nth textures 0)))
 
 (defn make-texture 
-  []
+  [target]
   (let [name (gen-texture)]
-    (doto (GLES11Ext/GL_TEXTURE_EXTERNAL_OES)
+    (doto target
       (GLES20/glBindTexture name)
-      (GLES20/glTexParameterf GLES20/GL_TEXTURE_MIN_FILTER GLES20/GL_LINEAR)
-      (GLES20/glTexParameterf GLES20/GL_TEXTURE_MAG_FILTER GLES20/GL_LINEAR)
+      ; TODO revisit filtering choice
+      (GLES20/glTexParameterf GLES20/GL_TEXTURE_MIN_FILTER GLES20/GL_NEAREST)
+      (GLES20/glTexParameterf GLES20/GL_TEXTURE_MAG_FILTER GLES20/GL_NEAREST)
       (GLES20/glTexParameteri GLES20/GL_TEXTURE_WRAP_S GLES20/GL_CLAMP_TO_EDGE)
       (GLES20/glTexParameteri GLES20/GL_TEXTURE_WRAP_T GLES20/GL_CLAMP_TO_EDGE))
     name))
+
+(defn gl-get-actual-error
+  []
+  (let [errno (GLES20/glGetError)]
+    (if (not= errno GLES20/GL_NO_ERROR) errno nil)))
+
+(defn print-gl-errors 
+  "Print all current GL errors."
+  []
+  (while
+    (when-let [errno (gl-get-actual-error)]
+      (log-i (str errno)))))
+
+(defn make-2x2-texture 
+  []
+  (do-let [name (make-texture GLES20/GL_TEXTURE_2D)]
+    (GLES20/glBindTexture GLES20/GL_TEXTURE_2D name)
+    (GLES20/glTexImage2D
+      GLES20/GL_TEXTURE_2D
+      0
+      GLES20/GL_RGBA
+      2
+      2
+      0
+      GLES20/GL_RGBA
+      GLES20/GL_UNSIGNED_BYTE
+      (vec-to-ubyte-buffer
+        [255 255 255 255
+         255   0   0 255
+         0   255   0 255
+         0     0 255 255]
+;        [0 0 0 255
+;         0   0   0 255
+;         0   0   0 255
+;         0     0 0 255]
+        ))))
 
 (defn get-preview-size
   [cam] 
@@ -92,16 +240,6 @@
 ;          (if (instance? Activity activity)
 ;            [activity features]
 ;            [*activity* (cons activity features)])
-
-(def 
-  ^{:doc "The current EGL to operate on"
-    :dynamic true}
-  *egl*)
-
-(def 
-  ^{:doc "The current EGL display to operate on"
-    :dynamic true}
-  *egl-display*)
 
 (defmacro with-egl
   "Evaluates body such that egl is bound to *egl*"
@@ -157,31 +295,153 @@
         EGL10/EGL_NO_CONTEXT
         (egl-attrib-list {EGL_CONTEXT_CLIENT_VERSION 2})))))
 
+(def fs-pos-attrib
+  {:size 2
+   :type GLES20/GL_FLOAT
+   :norm false
+   :stride 0
+   :buffer (vec-to-float-buffer
+             (if *debug-shrink-fs-rects*
+               [-0.75 -0.75,  -0.75,  0.75,  0.75  0.75,  0.75 -0.75]
+               [-1. -1.,  -1.   1.,  1.  1.,  1. -1.]))})
+
+(def fs-tex-attrib
+  {:size 2
+   :type GLES20/GL_FLOAT
+   :norm false
+   :stride 0
+   :buffer (vec-to-float-buffer
+             [0. 0.
+              0. 1.
+              1. 1.
+              1. 0.])})
+
+(defmacro with-program
+  "Calls useProgram and binds *program* to program"
+  [program & body]
+  `(let [program# ~program]
+     (GLES20/glUseProgram program#)
+     (binding [*program* program#]
+       ~@body)))
+
+(defn assoc-location
+  [kw loc-str]
+  (assoc kw :location (GLES20/glGetAttribLocation *program* loc-str)))
+
+(defn setup-texture
+  [tex-name unit uniform-name]
+  (GLES20/glActiveTexture (+ GLES20/GL_TEXTURE0 unit))
+  (GLES20/glBindTexture GLES20/GL_TEXTURE_2D tex-name)
+  (GLES20/glUniform1i
+    (GLES20/glGetUniformLocation *program* uniform-name)
+    unit))
+
+(defn draw-fs-tex-rect
+  [tex-name]
+  (log-i "Trying to Draw A rect")
+  (setup-texture tex-name 0 "uSampler")
+  (setup-attrib (assoc-location fs-pos-attrib "aPosition"))
+  (setup-attrib (assoc-location fs-tex-attrib "aTexcoord0"))
+  (GLES20/glDrawArrays GLES20/GL_TRIANGLE_FAN 0 4))
+
+(defn load-shader
+  [type-code src]
+  (do-let
+    [shader (doto (GLES20/glCreateShader type-code)
+              (GLES20/glShaderSource src)
+              (GLES20/glCompileShader))]
+    (when (and *debug-gl-shader-log*
+               (= GLES20/GL_FALSE
+                  (n-ints-from-buffer 1
+                    (GLES20/glGetShaderiv shader GLES20/GL_COMPILE_STATUS))))
+      (log-i (GLES20/glGetShaderInfoLog shader)))))
+
+(defn load-program
+  [vtx-src frg-src]
+  (do-let [program
+  (doto (GLES20/glCreateProgram)
+    (GLES20/glAttachShader (load-shader GLES20/GL_VERTEX_SHADER vtx-src))
+    (GLES20/glAttachShader (load-shader GLES20/GL_FRAGMENT_SHADER frg-src))
+    (GLES20/glLinkProgram))]
+          (when (and *debug-gl-shader-log*
+                     (= GLES20/GL_FALSE
+                        (n-ints-from-buffer 1
+                          (GLES20/glGetProgramiv program GLES20/GL_LINK_STATUS))))
+            (log-i (GLES20/glGetProgramInfoLog program)))))
+
 (defn make-preview-renderer
-  []
-  (reify android.opengl.GLSurfaceView$Renderer
-    (onDrawFrame 
-      [_ gl10] 
-      (GLES20/glClearColor 0.8 0.3 0.3 1.0)
-      (GLES20/glClear GLES20/GL_COLOR_BUFFER_BIT))
-    (onSurfaceChanged
-     [_ gl10 w h] )
-    (onSurfaceCreated
-      [_ gl10 egl-cfg] )))
+  [gl-surface-view rotation]
+  (let [gl-state (ref nil)]
+    (reify android.opengl.GLSurfaceView$Renderer
+      (onDrawFrame 
+        [_ gl10] 
+        (GLES20/glClearColor 0.8 0.3 0.3 1.0)
+        (GLES20/glClear GLES20/GL_COLOR_BUFFER_BIT)
+        (with-program (@gl-state :simple-prg)
+          (draw-fs-tex-rect (@gl-state :preview-tex))))
+      (onSurfaceChanged
+        [_ gl10 w h] )
+      (onSurfaceCreated
+        [renderer gl10 egl-cfg] 
+        (let [cam-id 0
+              cam (Camera/open cam-id)
+              [w h] (get-preview-size cam)
+              preview-tex (make-2x2-texture)
+              ;preview-tex (make-texture GLES11Ext/GL_TEXTURE_EXTERNAL_OES)
+              preview-st (doto (SurfaceTexture. preview-tex)
+                           (.setOnFrameAvailableListener
+                             (on-frame-available
+                               (log-i "preview frame incoming")
+                               (.requestRender gl-surface-view))))
+              simple-prg (load-program
+                           "attribute vec2 aPosition;
+                           attribute vec2 aTexcoord0;
+
+                           varying vec2 vTexcoord0;
+
+                           void main() {
+                             gl_Position = vec4(aPosition, 0, 1);
+                             // Check to pass texcoord from v -> f
+                             //vTexcoord0 = vec2(1.0, 0.0);
+                             vTexcoord0 = aTexcoord0;
+                           }"
+                           "precision mediump float;
+                           varying vec2 vTexcoord0;
+                           uniform sampler2D uSampler;
+
+                           void main() {
+                              gl_FragColor = texture2D(uSampler, vTexcoord0);
+                              //gl_FragColor = syntax err
+                             // Check to make sure texcoord is valid
+                             // gl_FragColor = vec4(vTexcoord0,1,1);
+                           }")]
+          (GLES20/glEnable GLES20/GL_TEXTURE_2D)
+          (doto cam
+            (.setPreviewTexture preview-st)
+           ; (.setDisplayOrientation
+           ;   (front-facing-camera-correction cam-id rotation))
+            (.startPreview))
+          (dosync (ref-set
+            gl-state {:preview-tex preview-tex
+                      :simple-prg simple-prg})))))))
 
 (defn -onCreate
   [^Activity this ^Bundle bundle] 
   (with-activity
     this
-    (doto this
+    (doto *activity*
       (.superOnCreate bundle)
       (.setContentView (get-layout :preview)))
-    (doto (find-view (get-id :preview_surface))
-      (.setEGLContextClientVersion 2)
-      (.setPreserveEGLContextOnPause false) ; start with the more bug-prone mode
-      (.setEGLConfigChooser false) ; no depth
-      (.setRenderer (make-preview-renderer ))
-      (.setRenderMode GLSurfaceView/RENDERMODE_WHEN_DIRTY))))
+    (let [preview-surface (find-view (get-id :preview_surface))]
+      (doto preview-surface
+        (.setEGLContextClientVersion 2)
+        (.setPreserveEGLContextOnPause false) ; start with the more bug-prone mode
+        (.setEGLConfigChooser false) ; no depth
+        (.setDebugFlags GLSurfaceView/DEBUG_CHECK_GL_ERROR)
+        (.setRenderer (make-preview-renderer
+                        preview-surface
+                        (get-display-rotation *activity*)))
+        (.setRenderMode GLSurfaceView/RENDERMODE_WHEN_DIRTY)))))
 
 ;  (defn -onCreate
 ;    [this bundle]
