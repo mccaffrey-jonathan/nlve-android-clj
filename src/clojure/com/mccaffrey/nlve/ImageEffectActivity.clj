@@ -176,51 +176,73 @@
     (.put (byte-array (map ubyte-ify in)))
     (.position 0)))
 
+(defn gl-error-to-str
+  [errno]
+  (case errno
+    GLES20/GL_NO_ERROR "GL_NO_ERROR"
+    GLES20/GL_INVALID_ENUM "GL_INVALID_ENUM"
+    GLES20/GL_INVALID_VALUE "GL_INVALID_VALUE"
+    GLES20/GL_INVALID_OPERATION "GL_INVALID_OPERATION"
+    GLES20/GL_INVALID_FRAMEBUFFER_OPERATION "GL_INVALID_FRAMEBUFFER_OPERATION"
+    GLES20/GL_OUT_OF_MEMORY "GL_OUT_OF_MEMORY"
+    (format "0x%02x" errno)))
+
 ; functions to deal with GL errors and debugging
 (defn gl-get-actual-error
   "Get a non-trivial GL error."
   []
   (let [errno (GLES20/glGetError)]
     (if (not= errno GLES20/GL_NO_ERROR)
-      (format "%02x" errno) nil)))
+      errno nil)))
 
 (defn print-gl-errors 
   "Print all current GL errors."
   [& op]
   (while
     (when-let [errno (gl-get-actual-error)]
-      (if (and errno *debug-exception-on-gl-errors*)
-        (throw (Throwable. (str "GL error: " errno))))
-      (log-i (if op
-               (str "GL errors after " op " " errno)
-               (str "GL error: " errno))))))
+      (let [err-str (gl-error-to-str errno)
+            full-str (if op
+                       (str "GL errors after " op " " err-str)
+                       (str "GL error: " err-str))]
+        (if *debug-exception-on-gl-errors* (throw (Throwable. full-str)))
+        (log-i full-str)))))
 
 (defn print-gl-errors-checked
   "Printf all current gl errors if 
   *debug-gl-check-errors* is true"
-  []
-  (if *debug-gl-check-errors* (print-gl-errors)))
+  [& op]
+  (if *debug-gl-check-errors*
+    (if op (print-gl-errors op)
+      (print-gl-errors))))
 
+; TODO left off because flatten was flattening too much
+(defn gl-calls-fn
+  [calls]
+  (mapcat (fn [call]
+            `[(log-i ~(str call))
+              (do-let [res# ~call]
+                      (print-gl-errors-checked '~call))])
+          calls))
+
+; How to remove extra parens...
 (defmacro gl-calls
   "Wrap a sequence of GL call expression,
   optionally checking GL errors after each.
   Returns the value of the last expr."
-  ([call-form]
-   `(do-rev
-      ~call-form
-      (if *debug-gl-check-errors* (print-gl-errors))))
-  ([call-form & more]
-   `(do ~call-form
-       (if *debug-gl-check-errors* (print-gl-errors))
-       (gl-calls ~@more))))
+  [& more]
+  `(do
+    ~@(gl-calls-fn more)))
 
 ; Functions to deal with creating and rendering OpenGL objects
 (defn setup-attrib
   [kw]
-  (log-i (str kw))
-  (gl-calls (GLES20/glEnableVertexAttribArray (:location kw)))
-  (apply #(GLES20/glVertexAttribPointer %1 %2 %3 %4 %5 %6)
-         ((juxt :location :size :type :norm :stride :buffer) kw)))
+  (gl-calls (GLES20/glEnableVertexAttribArray (:location kw))
+            (GLES20/glVertexAttribPointer (:location kw)
+                                          (:size kw)
+                                          (:type kw)
+                                          (:norm kw)
+                                          (:stride kw)
+                                          (:buffer kw))))
 
 (defn gen-texture
   "Return a texture name created by glGenTextures"
@@ -437,22 +459,36 @@
 
 (defn make-preview-renderer
   [gl-surface-view rotation]
-  (let [gl-state (ref nil)]
+  (let [gl-state (ref {})]
     (reify android.opengl.GLSurfaceView$Renderer
       (onDrawFrame 
         [_ gl10] 
-        (gl-calls
-          (GLES20/glClearColor 0.8 0.3 0.3 1.0)
-          (GLES20/glClear GLES20/GL_COLOR_BUFFER_BIT))
         (.apply (@gl-state :saturate)
                 (get-in @gl-state [:preview-tex :name])
                 (get-in @gl-state [:preview-tex :width])
                 (get-in @gl-state [:preview-tex :height])
                 (get-in @gl-state [:display-tex :name]))
+;        (log-i (str (nth (n-ints-from-buffer
+;                      1
+;                      (GLES20/glGetFramebufferAttachmentParameteriv
+;                        GLES20/GL_FRAMEBUFFER
+;                        GLES20/GL_COLOR_ATTACHMENT0
+;                        GLES20/GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME)) 0)))
+        ; Apply leave the framebuffer in a messy state.  Should come up with a more clojure-ey way to restore
+        (print-gl-errors-checked)
+        ; Restore state the the media effect may have mucked up, and clear
+        (gl-calls (GLES20/glBindFramebuffer GLES20/GL_FRAMEBUFFER 0)
+                  (GLES20/glViewport 0 0 (@gl-state :w) (@gl-state :h))
+                  (GLES20/glScissor 0 0 (@gl-state :w) (@gl-state :h))
+                  (GLES20/glClearColor 0.8 0.3 0.3 1.0)
+                  (GLES20/glClear GLES20/GL_COLOR_BUFFER_BIT))
         (with-program (@gl-state :simple-prg)
           (draw-fs-tex-rect (@gl-state :display-tex))))
       (onSurfaceChanged
-        [_ gl10 w h] )
+        [_ gl10 w h] 
+        (dosync (alter gl-state assoc
+                       :w w
+                       :h h)))
       (onSurfaceCreated
         [renderer gl10 egl-cfg] 
           (let [; cam-id 0
@@ -465,16 +501,11 @@
                                (on-frame-available
                                  (log-i "preview frame incoming")
                                  (.requestRender gl-surface-view))))
-                saturate (do-let 
-                           [saturate (-> (EffectContext/createWithCurrentGlContext)
+                saturate (-> (EffectContext/createWithCurrentGlContext)
                                        .getFactory
-                                       (make-effect EffectFactory/EFFECT_SEPIA))]
-                           (.apply saturate
-                                   (preview-tex :name)
-                                   (preview-tex :width)
-                                   (preview-tex :height)
-                                   (display-tex :name)))
+                                       (make-effect EffectFactory/EFFECT_SEPIA))
                 simple-prg (load-program
+                             ; vertex program
                              "attribute vec2 aPosition;
                              attribute vec2 aTexcoord0;
 
@@ -486,15 +517,17 @@
                              //vTexcoord0 = vec2(1.0, 0.0);
                              vTexcoord0 = aTexcoord0;
                              }"
+                             ; frag shader
                              "precision mediump float;
                              varying vec2 vTexcoord0;
                              uniform sampler2D uSampler;
 
                              void main() {
                              gl_FragColor = texture2D(uSampler, vTexcoord0);
-                             //gl_FragColor = syntax err
+                             // gl_FragColor = vec4(0, 1, 0.2, 1);
+                             // gl_FragColor = syntax err
                              // Check to make sure texcoord is valid
-                             // gl_FragColor = vec4(vTexcoord0,1,1);
+                             // gl_FragColor = vec4(vTexcoord0, 1, 1);
                              }")]
             ; Enabling GL_TEXTURE_2D is not needed in ES 2.0.
             ; (gl-calls (GLES20/glEnable GLES20/GL_TEXTURE_2D))
@@ -505,11 +538,11 @@
  ;             ; (.setDisplayOrientation
  ;             ;   (front-facing-camera-correction cam-id rotation))
  ;             (.startPreview))
-            (dosync (ref-set
-                      gl-state {:preview-tex preview-tex
-                                :display-tex display-tex
-                                :saturate saturate
-                                :simple-prg simple-prg})))))))
+            (dosync (alter gl-state assoc 
+                           :preview-tex preview-tex
+                           :display-tex display-tex
+                           :saturate saturate
+                           :simple-prg simple-prg)))))))
 
 (defn -onCreate
   [^Activity this ^Bundle bundle] 
