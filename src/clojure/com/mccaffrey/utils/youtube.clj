@@ -14,7 +14,7 @@
 ; stupid hack for lazy initialization
 (def youtube-http (memoize #(AsyncHttpClient.)))
 
-(def example-id "yo3M6EB8kmk")
+(def example-id "6BTCoT8ajbI")
 (def info-url-base "http://www.youtube.com/get_video_info?&video_id=")
 
 (defn on-http-call
@@ -80,12 +80,13 @@
               (success-cb
                 (do-let [uri (Uri/parse
                                (fmt-stream-map-to-url
-                                    ; just 1st for now
-                                    (first (pr-seq-with-newlines
-                                             (map query-param-map
-                                                (map #(URLDecoder/decode % "utf-8")
-                                                     (.split (res-map "url_encoded_fmt_stream_map")
-                                                             ",")))))))]
+                                    ; just first for now
+                                    (first 
+                                      (pr-seq-with-newlines
+                                        (map query-param-map
+                                             (map #(URLDecoder/decode % "utf-8")
+                                                  (.split (res-map "url_encoded_fmt_stream_map")
+                                                          ",")))))))]
                         (log-i (.toString uri))
                         ))))]
     ; http call, so we should do it async

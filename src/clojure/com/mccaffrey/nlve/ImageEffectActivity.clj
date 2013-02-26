@@ -212,7 +212,7 @@
     ; Test video playback
     ;
     (youtube-media-uri
-      example-id "90" true
+      example-id
       (setup-video-view *activity*)
       (fn [e res] (throw e)))))
 
