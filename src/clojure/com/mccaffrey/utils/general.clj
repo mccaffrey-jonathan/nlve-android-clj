@@ -21,7 +21,18 @@
 (defmacro ?
   [val]
   `(do-let [x# ~val]
-           (pr-val x# val)))
+           (pr-val '~val x#)))
+
+(defn seq-to-str-with-newlines
+  [in-seq]
+  (str "(" (apply str (mapcat (fn [it] [(str it ",
+                                                ")])
+                              in-seq)) ")"))
+
+(defn pr-seq-with-newlines
+  [in-seq]
+  (log-i (seq-to-str-with-newlines in-seq))
+  in-seq) 
 
 (defmacro do-rev
   "Kind of like do, but return the first expr in the body, instead of the last.

@@ -15,7 +15,7 @@
            [javax.microedition.khronos.egl EGLContext EGL10 EGL])
   (:use [neko context find-view log activity]
         [neko.listeners view]
-        [com.mccaffrey.utils general gl]))
+        [com.mccaffrey.utils general gl media youtube]))
 
 (deflog "ImageEffectActivity")
 
@@ -184,6 +184,24 @@
                  :saturate saturate
                  :simple-prg simple-prg))))))
 
+(defn setup-video-view [ctx]
+  (fn [uri] 
+    (with-activity
+      ctx
+      (doto (find-view (get-id :video_surf))
+        (.setOnErrorListener
+          (on-media-player-error-call throw-mp-error))
+        (.setOnInfoListener
+          (on-media-player-info-call log-mp-info))
+        (.setOnPreparedListener
+          (on-media-player-prepared
+            (log-i "MediaPlayer prepared")))
+        (.setOnCompletionListener
+          (on-media-player-completion
+            (log-i "MediaPlayer completion")))
+        (.setVideoURI uri)
+        (.start)))))
+
 (defn -onCreate
   [^Activity this ^Bundle bundle] 
   (with-activity
@@ -191,14 +209,21 @@
     (doto *activity*
       (.superOnCreate bundle)
       (.setContentView (get-layout :preview)))
-    (let [preview-surface (find-view (get-id :preview_surface))]
-      (doto preview-surface
-        (.setEGLContextClientVersion 2)
-        (.setPreserveEGLContextOnPause false) ; start with the more bug-prone mode
-        (.setEGLConfigChooser false) ; no depth
-        ; Annoyingly, this is broken for ES2 funcs
-        ; (.setDebugFlags GLSurfaceView/DEBUG_CHECK_GL_ERROR)
-        (.setRenderer (make-preview-renderer
-                        preview-surface
-                        (get-display-rotation *activity*)))
-        (.setRenderMode GLSurfaceView/RENDERMODE_WHEN_DIRTY)))))
+    ; Test video playback
+    ;
+    (youtube-media-uri
+      example-id "90" true
+      (setup-video-view *activity*)
+      (fn [e res] (throw e)))))
+
+;    (let [preview-surface (find-view (get-id :preview_surface))]
+;      (doto preview-surface
+;        (.setEGLContextClientVersion 2)
+;        (.setPreserveEGLContextOnPause false) ; start with the more bug-prone mode
+;        (.setEGLConfigChooser false) ; no depth
+;        ; Annoyingly, this is broken for ES2 funcs
+;        ; (.setDebugFlags GLSurfaceView/DEBUG_CHECK_GL_ERROR)
+;        (.setRenderer (make-preview-renderer
+;                        preview-surface
+;                        (get-display-rotation *activity*)))
+;        (.setRenderMode GLSurfaceView/RENDERMODE_WHEN_DIRTY)))))
