@@ -1,4 +1,4 @@
-(ns com.mccaffrey.utils.general
+(ns com.mccaffrey.nlve.general
   (:gen-class :main false
               :extends android.app.Activity
               :exposes-methods {onCreate superOnCreate})
@@ -8,50 +8,23 @@
 
 (deflog "utils/general")
 
-; TODO add docstr, meta, etc.
-(defmacro make-unary-ons
-  "Macro to generate on- and on- -call variants for
-  a Java listener class, that take a body and function respectively"
-  [name-stub-sym class-sym cb-sym args]
-  (let [on-prefix (str "on-" (name name-stub-sym))
-        call-sym (symbol (str on-prefix "-call"))
-        macro-sym (symbol on-prefix)
-        body-sym (gensym "body")]
-    `(do
-       (defn ~call-sym [handler#]
-         (reify ~class-sym 
-          (~cb-sym [~@args]
-             (handler# ~@args))))
-       (defmacro ~macro-sym 
-         [& ~body-sym]
-         `(~~call-sym 
-              (fn [~@'~args] ~@~body-sym))))))
+(defmacro ?
+  [val]
+  `(let [x# ~val]
+      (log-i (str '~val '~'is x#))
+      x#))
+
+(defn seq-to-str-with-newlines
+  [in-seq]
+  (str "(" (mapcat #(str % ",
+                           ")
+                   in-seq) ")"))
 
 (defmacro do-let
   [[binding-form init-expr] & body]
   `(let [~binding-form ~init-expr]
      ~@body
      ~binding-form))
-
-(defn pr-val
-  [sym val]
-  (log-i (str sym " is " val)))
-
-(defmacro ?
-  [val]
-  `(do-let [x# ~val]
-           (pr-val '~val x#)))
-
-(defn seq-to-str-with-newlines
-  [in-seq]
-  (str "(" (apply str (mapcat (fn [it] [(str it ",
-                                                ")])
-                              in-seq)) ")"))
-
-(defn pr-seq-with-newlines
-  [in-seq]
-  (log-i (seq-to-str-with-newlines in-seq))
-  in-seq) 
 
 (defmacro do-rev
   "Kind of like do, but return the first expr in the body, instead of the last.

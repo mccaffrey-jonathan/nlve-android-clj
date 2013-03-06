@@ -1,5 +1,5 @@
 (ns com.mccaffrey.utils.gl
-  (:import [android.opengl GLES20]
+  (:import [android.opengl GLES20 GLES11Ext]
            [java.nio ByteBuffer IntBuffer ByteOrder])
   (:use [com.mccaffrey.utils general]
         [neko log]))
@@ -96,6 +96,23 @@
   `(do
     ~@(gl-calls-fn more)))
 
+(defn gen-framebuffer
+  "Return a generated FBO"
+  []
+  (let [fbos (int-array 1)]
+    (gl-calls (GLES20/glGenFramebuffers 1 fbos 0))
+    (nth fbos 0)))
+
+(defn delete-framebuffer
+  "Delete a generated fbo"
+  [fbo]
+  (gl-calls (GLES20/glDeleteFramebuffers 1 (int-array [fbo]) 0)))
+
+(defn check-framebuffer-status
+  []
+  (if (not (= (GLES20/glCheckFramebufferStatus GLES20/GL_FRAMEBUFFER)))
+    (throw (Throwable. "Framebuffer not complete!"))))
+
 (defn load-shader
   "Create a shader of a given type from a string of source code,
   returning the compiled shader object."
@@ -145,6 +162,11 @@
    (let [textures (int-array 1)]
      (gl-calls (GLES20/glGenTextures 1 textures 0))
      (nth textures 0))})
+
+(defn delete-texture
+  "Return a texture name created by glGenTextures"
+  [tex]
+  (GLES20/glDeleteTextures 1 (int-array [(tex :name)]) 0))
 
 (defn make-texture 
   [target]
@@ -204,6 +226,13 @@
               1. 1.
               1. 0.])})
 
+(defmacro with-framebuffer
+  [fb & body]
+  `(do
+     (gl-calls (GLES20/glBindFramebuffer GLES20/GL_FRAMEBUFFER ~fb))
+     ~@body
+     (gl-calls (GLES20/glBindFramebuffer GLES20/GL_FRAMEBUFFER 0))))
+
 (defmacro with-program
   "Calls useProgram and binds *program* to program"
   [program & body]
@@ -217,20 +246,95 @@
   [kw loc-str]
   (assoc kw :location (gl-calls (GLES20/glGetAttribLocation *program* loc-str))))
 
+; TODO is unbinding necessary?
+(defmacro with-texture
+  [target tex unit uniform-name & body]
+  `(let [target# ~target]
+     (setup-texture target# ~tex ~unit ~uniform-name)
+     ~@body
+    (GLES20/glBindTexture target# 0)))
+
+
+
 (defn setup-texture
   "Setup a texture for rendering with a program."
-  [tex unit uniform-name]
+  [target tex unit uniform-name]
   (gl-calls 
     (GLES20/glActiveTexture (+ GLES20/GL_TEXTURE0 unit))
-    (GLES20/glBindTexture GLES20/GL_TEXTURE_2D (tex :name))
+    (GLES20/glBindTexture target (tex :name))
     (GLES20/glUniform1i
       (GLES20/glGetUniformLocation *program* uniform-name)
       unit)))
 
 (defn draw-fs-tex-rect
   "Draw a given texture on full-screen quad."
-  [tex]
-  (setup-texture tex 0 "uSampler")
-  (setup-attrib (assoc-location fs-pos-attrib "aPosition"))
-  (setup-attrib (assoc-location fs-tex-attrib "aTexcoord0"))
-  (gl-calls (GLES20/glDrawArrays GLES20/GL_TRIANGLE_FAN 0 4)))
+  [target tex]
+  (with-texture
+    target tex 0 "uSampler"
+    (setup-attrib (assoc-location fs-pos-attrib "aPosition"))
+    (setup-attrib (assoc-location fs-tex-attrib "aTexcoord0"))
+    (gl-calls (GLES20/glDrawArrays GLES20/GL_TRIANGLE_FAN 0 4))))
+
+; TODO take in re-useable texture ids?
+(defn copy-sampler-external-to-tex
+  [external-tex]
+  (assoc
+    (do-let [tex (make-texture GLES20/GL_TEXTURE_2D)]
+            (gl-calls (GLES20/glTexImage2D
+                        GLES20/GL_TEXTURE_2D
+                        0 ; stupid border arg
+                        GLES20/GL_RGBA
+                        (external-tex :width)
+                        (external-tex :height)
+                        0 ; stupid border arg
+                        GLES20/GL_RGBA
+                        GLES20/GL_UNSIGNED_BYTE
+                        nil))
+            ; TODO macro to gen/bind and unbind/destroy temp FBO?
+            (let [fbo (gen-framebuffer)]
+              (with-framebuffer
+                fbo
+                (gl-calls
+                  (GLES20/glFramebufferTexture2D
+                    GLES20/GL_FRAMEBUFFER
+                    GLES20/GL_COLOR_ATTACHMENT0
+                    GLES20/GL_TEXTURE_2D
+                    (tex :name)
+                    0))
+                (check-framebuffer-status)
+                ; TODO don't spam recompile programs
+                (with-program (load-program
+                                ; vertex program
+                                "attribute vec2 aPosition;
+                                attribute vec2 aTexcoord0;
+
+                                varying vec2 vTexcoord0;
+
+                                void main() {
+                                gl_Position = vec4(aPosition, 0, 1);
+                                // Check to pass texcoord from v -> f
+                                //vTexcoord0 = vec2(1.0, 0.0);
+                                vTexcoord0 = aTexcoord0;
+                                }"
+                                ; frag shader
+                                "
+                                #extension GL_OES_EGL_image_external : require
+
+                                precision mediump float;
+                                varying vec2 vTexcoord0;
+                                uniform samplerExternalOES uSampler;
+
+                                void main() {
+                                gl_FragColor = texture2D(uSampler, vTexcoord0);
+                                // gl_FragColor = vec4(0, 1, 0.2, 1);
+                                // gl_FragColor = syntax err
+                                // Check to make sure texcoord is valid
+                                // gl_FragColor = vec4(vTexcoord0, 1, 1);
+                                }")
+                              (draw-fs-tex-rect
+                                GLES11Ext/GL_TEXTURE_EXTERNAL_OES
+                                external-tex)))
+              (delete-framebuffer fbo)))
+    ; TODO this is a little ugly
+    :width (external-tex :width)
+    :height (external-tex :height)))

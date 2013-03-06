@@ -59,24 +59,14 @@
   (log-i (fmt-mp-info what extra))
   true)
 
-; TODO add docstr, meta, etc.
-(defmacro make-unary-ons
-  "Macro to generate on- and on- -call variants for
-  a Java listener class, that take a body and function respectively"
-  [name-stub-sym class-sym cb-sym args]
-  (let [on-prefix (str "on-" (name name-stub-sym))
-        call-sym (symbol (str on-prefix "-call"))
-        macro-sym (symbol on-prefix)
-        body-sym (gensym "body")]
-    `(do
-       (defn ~call-sym [handler#]
-         (reify ~class-sym 
-          (~cb-sym [~@args]
-             (handler# ~@args))))
-       (defmacro ~macro-sym 
-         [& ~body-sym]
-         `(~~call-sym 
-              (fn [~@'~args] ~@~body-sym))))))
+(defn log-mp-completion
+  [this mp]
+  (log-i "MediaPlayer completion"))
+
+(defn generic-log-fn
+  [msg]
+  (fn [& rest]
+    (log-i msg)))
 
 (make-unary-ons media-player-error
                 android.media.MediaPlayer$OnErrorListener
@@ -97,6 +87,26 @@
                 android.media.MediaPlayer$OnPreparedListener
                 onPrepared
                 [this mp])
+
+(make-unary-ons media-player-buffering-update
+                android.media.MediaPlayer$OnBufferingUpdateListener
+                onBufferingUpdate
+                [this mp percent])
+
+(make-unary-ons media-player-seek-complete
+                android.media.MediaPlayer$OnSeekCompleteListener
+                onSeekComplete
+                [this mp])
+
+(make-unary-ons media-player-timed-text
+                android.media.MediaPlayer$OnTimedTextListener
+                onTimedText
+                [this mp tt])
+
+(make-unary-ons media-player-video-size-changed
+                android.media.MediaPlayer$OnVideoSizeChangedListener
+                onVideoSizeChanged
+                [this mp w h])
 
 ; (defmacro make-on-body
 ;   [call-version-sym]

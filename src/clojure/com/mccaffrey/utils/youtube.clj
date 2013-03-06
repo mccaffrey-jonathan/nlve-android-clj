@@ -69,9 +69,8 @@
 
 ; TODO, should we return some metadata (size, fmt, qual) as well?
 (defn youtube-media-uri
-  [video-id fmt-quality fall-back success-cb & error-cb]
+  [video-id success-cb error-cb]
   {:pre [(fn? success-cb)
-         (string? fmt-quality)
          (string? video-id)]}
   (letfn [(info-cb [res]
             ; TODO 'invert' this function
