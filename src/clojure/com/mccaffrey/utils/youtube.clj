@@ -74,6 +74,7 @@
          (string? video-id)]}
   (letfn [(info-cb [res]
             ; TODO 'invert' this function
+            (log-i "In Callback")
             (let [res-map (query-param-map res)
                   fmts (.split (res-map "fmt_list") ",")]
               (success-cb
@@ -89,6 +90,7 @@
                         (log-i (.toString uri))
                         ))))]
     ; http call, so we should do it async
+    (log-i "With Callback")
     (.get (youtube-http)
       (str info-url-base video-id)
       (RequestParams.) ; TODO can we re-use the default params?

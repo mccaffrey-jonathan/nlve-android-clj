@@ -1,8 +1,11 @@
 (ns com.mccaffrey.utils.gl
+
   (:import [android.opengl GLES20 GLES11Ext]
-           [java.nio ByteBuffer IntBuffer ByteOrder])
+           [java.nio ByteBuffer IntBuffer ByteOrder Buffer])
   (:use [com.mccaffrey.utils general]
         [neko log]))
+
+(set! *warn-on-reflection* true)
 
 (deflog "utils/gl")
 
@@ -32,6 +35,11 @@
   ^{:doc "Shrink fs rects to 3/4ths size of debugging"
     :dynamic true}
   *debug-shrink-fs-rects* true)
+
+(def 
+  ^{:doc "Print all gl-calls with args"
+    :dynamic true}
+  *debug-verbose-gl-print-calls* false)
 
 (defn gl-error-to-str
   [errno]
@@ -82,7 +90,7 @@
 (defn gl-calls-fn
   [calls]
   (mapcat (fn [call]
-            `[(macro-pr ~(str call))
+            `[(if *debug-verbose-gl-print-calls* (macro-pr ~(str call)))
               (do-let [res# ~call]
                       (print-gl-errors-checked '~call))])
           calls))
@@ -148,12 +156,12 @@
 (defn setup-attrib
   [kw]
   (gl-calls (GLES20/glEnableVertexAttribArray (:location kw))
-            (GLES20/glVertexAttribPointer (:location kw)
-                                          (:size kw)
-                                          (:type kw)
-                                          (:norm kw)
-                                          (:stride kw)
-                                          (:buffer kw))))
+            (GLES20/glVertexAttribPointer ^Integer (:location kw)
+                                          ^Integer (:size kw)
+                                          ^Integer (:type kw)
+                                          ^Boolean (:norm kw)
+                                          ^Integer (:stride kw)
+                                          ^Buffer (:buffer kw))))
 
 (defn gen-texture
   "Return a texture name created by glGenTextures"
@@ -275,66 +283,45 @@
     (setup-attrib (assoc-location fs-tex-attrib "aTexcoord0"))
     (gl-calls (GLES20/glDrawArrays GLES20/GL_TRIANGLE_FAN 0 4))))
 
+(defn fbo-tex
+  [target fmt size-thingie width height]
+  (let [fbo (gen-framebuffer)]
+    [fbo
+     (assoc
+       (do-let [tex (make-texture GLES20/GL_TEXTURE_2D)]
+               (gl-calls (GLES20/glTexImage2D
+                           target
+                           0 ; stupid border arg
+                           fmt
+                           width
+                           height
+                           0 ; stupid border arg
+                           fmt
+                           size-thingie
+                           nil))
+               (with-framebuffer
+                 fbo
+                 (gl-calls
+                   (GLES20/glFramebufferTexture2D
+                     GLES20/GL_FRAMEBUFFER
+                     GLES20/GL_COLOR_ATTACHMENT0
+                     GLES20/GL_TEXTURE_2D
+                     (tex :name)
+                     0))
+                 (check-framebuffer-status)
+                 ))
+       :width width
+       :height height)]))
+
 ; TODO take in re-useable texture ids?
 (defn copy-sampler-external-to-tex
-  [external-tex]
-  (assoc
-    (do-let [tex (make-texture GLES20/GL_TEXTURE_2D)]
-            (gl-calls (GLES20/glTexImage2D
-                        GLES20/GL_TEXTURE_2D
-                        0 ; stupid border arg
-                        GLES20/GL_RGBA
-                        (external-tex :width)
-                        (external-tex :height)
-                        0 ; stupid border arg
-                        GLES20/GL_RGBA
-                        GLES20/GL_UNSIGNED_BYTE
-                        nil))
-            ; TODO macro to gen/bind and unbind/destroy temp FBO?
-            (let [fbo (gen-framebuffer)]
-              (with-framebuffer
-                fbo
-                (gl-calls
-                  (GLES20/glFramebufferTexture2D
-                    GLES20/GL_FRAMEBUFFER
-                    GLES20/GL_COLOR_ATTACHMENT0
-                    GLES20/GL_TEXTURE_2D
-                    (tex :name)
-                    0))
-                (check-framebuffer-status)
-                ; TODO don't spam recompile programs
-                (with-program (load-program
-                                ; vertex program
-                                "attribute vec2 aPosition;
-                                attribute vec2 aTexcoord0;
-
-                                varying vec2 vTexcoord0;
-
-                                void main() {
-                                gl_Position = vec4(aPosition, 0, 1);
-                                // Check to pass texcoord from v -> f
-                                //vTexcoord0 = vec2(1.0, 0.0);
-                                vTexcoord0 = aTexcoord0;
-                                }"
-                                ; frag shader
-                                "
-                                #extension GL_OES_EGL_image_external : require
-
-                                precision mediump float;
-                                varying vec2 vTexcoord0;
-                                uniform samplerExternalOES uSampler;
-
-                                void main() {
-                                gl_FragColor = texture2D(uSampler, vTexcoord0);
-                                // gl_FragColor = vec4(0, 1, 0.2, 1);
-                                // gl_FragColor = syntax err
-                                // Check to make sure texcoord is valid
-                                // gl_FragColor = vec4(vTexcoord0, 1, 1);
-                                }")
-                              (draw-fs-tex-rect
-                                GLES11Ext/GL_TEXTURE_EXTERNAL_OES
-                                external-tex)))
-              (delete-framebuffer fbo)))
-    ; TODO this is a little ugly
-    :width (external-tex :width)
-    :height (external-tex :height)))
+  [external-tex external-blit-prg fbo]
+  ; TODO macro to gen/bind and unbind/destroy temp FBO?
+  (with-framebuffer
+    fbo
+    ; TODO don't spam recompile programs
+    (with-program 
+      external-blit-prg
+      (draw-fs-tex-rect
+        GLES11Ext/GL_TEXTURE_EXTERNAL_OES
+        external-tex))))

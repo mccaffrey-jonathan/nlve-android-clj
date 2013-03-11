@@ -16,7 +16,9 @@
            [javax.microedition.khronos.egl EGLContext EGL10 EGL])
   (:use [neko context find-view log activity]
         [neko.listeners view]
-        [com.mccaffrey.utils general gl media youtube]))
+        [com.mccaffrey.utils general gl media media-effects youtube]))
+
+(set! *warn-on-reflection* true)
 
 (deflog "ImageEffectActivity")
 
@@ -26,14 +28,14 @@
                 [this surface-texture])
 
 (defn get-preview-size
-  [cam] 
+  [^Camera cam] 
   (let [sz (.. cam
              (getParameters)
              (getPreviewSize))]
     [(.width sz) (.height sz)]))
 
 (defn get-display-rotation
-  [activity]
+  [^Activity activity]
   (let [rotation (.. activity
                    getWindowManager
                    getDefaultDisplay
@@ -53,7 +55,8 @@
 
 (defn front-facing-camera-correction
   [cam-id degrees]
-  (let [info (get-camera-info cam-id)]
+  (let [info ^android.hardware.Camera$CameraInfo
+        (get-camera-info cam-id)]
     (cond
       (= (.facing info) android.hardware.Camera$CameraInfo/CAMERA_FACING_FRONT) 
       (mod (- 360 (mod (+ (.orientation info) degrees) 360)))
@@ -95,27 +98,29 @@
       (onDrawFrame 
         [_ state gl10] 
         ; TODO remove this
-        (log-i (str state))
-        (.updateTexImage video-st)
-        (let [temp-tex (copy-sampler-external-to-tex (state :video-tex))]
-          (.apply (state :saturate)
-                  (temp-tex :name)
-                  ; TODO use real size
-                  512
-                  512
-                  (get-in state [:display-tex :name]))
-
-          (print-gl-errors-checked)
-          ; Restore state the the media effect may have mucked up, and clear
-          (gl-calls (GLES20/glBindFramebuffer GLES20/GL_FRAMEBUFFER 0)
-                    (GLES20/glViewport 0 0 (state :w) (state :h))
-                    (GLES20/glScissor 0 0 (state :w) (state :h))
-                    (GLES20/glClearColor 0.8 0.3 0.3 1.0)
-                    (GLES20/glClear GLES20/GL_COLOR_BUFFER_BIT))
-          (with-program (state :simple-prg)
-                        (draw-fs-tex-rect GLES20/GL_TEXTURE_2D 
-                                          (state :display-tex)))
-          (delete-texture temp-tex))
+        (.updateTexImage ^SurfaceTexture video-st)
+        ; TODO make this at least kinda functionaly
+        (copy-sampler-external-to-tex
+          (state :video-tex)
+          (state :external-blt-prg)
+          (state :fbo))
+        ; Extract apply to a fn
+        (apply-effect
+          (state :saturate)
+          ; repeated drilling into state is ugly, should clean up
+          ; Also type hints suck, I'd like to push em into function decls
+          (state :buffer-tex)
+          (state :display-tex))
+        ; (print-gl-errors-checked)
+        ; Restore state the the media effect may have mucked up, and clear
+        (gl-calls (GLES20/glBindFramebuffer GLES20/GL_FRAMEBUFFER 0)
+                  (GLES20/glViewport 0 0 (state :w) (state :h))
+                  (GLES20/glScissor 0 0 (state :w) (state :h))
+                  (GLES20/glClearColor 0.8 0.3 0.3 1.0)
+                  (GLES20/glClear GLES20/GL_COLOR_BUFFER_BIT))
+        (with-program (state :simple-prg)
+                      (draw-fs-tex-rect GLES20/GL_TEXTURE_2D 
+                                        (state :display-tex)))
         state)
       (onSurfaceChanged
         [_ state gl10 w h] 
@@ -140,6 +145,35 @@
               saturate (-> (EffectContext/createWithCurrentGlContext)
                          .getFactory
                          (make-effect EffectFactory/EFFECT_SATURATE))
+
+              external-blt-prg (load-program 
+                                 ; vertex program
+                                 "attribute vec2 aPosition;
+                                 attribute vec2 aTexcoord0;
+
+                                 varying vec2 vTexcoord0;
+
+                                 void main() {
+                                 gl_Position = vec4(aPosition, 0, 1);
+                                 // Check to pass texcoord from v -> f
+                                 //vTexcoord0 = vec2(1.0, 0.0);
+                                 vTexcoord0 = aTexcoord0;
+                                 }"
+                                 ; frag shader
+                                 "
+                                 #extension GL_OES_EGL_image_external : require
+
+                                 precision mediump float;
+                                 varying vec2 vTexcoord0;
+                                 uniform samplerExternalOES uSampler;
+
+                                 void main() {
+                                 gl_FragColor = texture2D(uSampler, vTexcoord0);
+                                 // gl_FragColor = vec4(0, 1, 0.2, 1);
+                                 // gl_FragColor = syntax err
+                                 // Check to make sure texcoord is valid
+                                 // gl_FragColor = vec4(vTexcoord0, 1, 1);
+                                 }")
               simple-prg (load-program
                            ; vertex program
                            "attribute vec2 aPosition;
@@ -164,7 +198,13 @@
                            // gl_FragColor = syntax err
                            // Check to make sure texcoord is valid
                            // gl_FragColor = vec4(vTexcoord0, 1, 1);
-                           }")]
+                           }")
+              [fbo buffer-tex] (fbo-tex
+                                 GLES20/GL_TEXTURE_2D
+                                 GLES20/GL_RGBA
+                                 GLES20/GL_UNSIGNED_BYTE
+                                 512
+                                 512)]
           ; Enabling GL_TEXTURE_2D is not needed in ES 2.0.
           ; (gl-calls (GLES20/glEnable GLES20/GL_TEXTURE_2D))
 
@@ -191,7 +231,11 @@
                  :video-tex video-tex
                  :saturate saturate
                  :mp mp
-                 :simple-prg simple-prg))))))
+                 :simple-prg simple-prg
+                 :external-blt-prg external-blt-prg
+                 :fbo fbo
+                 :buffer-tex buffer-tex
+                 ))))))
 
 (defn setup-video-view [ctx]
   (fn [uri] 
@@ -213,7 +257,7 @@
 ; PICKUP setup mediaplayer for URI and plug it up to a surface-texture
 ; and then to a texture for most excellent GL filtering!
 (defn media-player-for-uri [ctx uri surface-texture]
-  (doto (MediaPlayer.)
+  (doto (^MediaPlayer MediaPlayer.)
     (.setOnErrorListener
       (on-media-player-error-call throw-mp-error))
     (.setOnInfoListener
@@ -282,8 +326,8 @@
       example-id
       ;(setup-video-view *activity*)
       (setup-filter-view *activity*)
-      (fn [e res] (throw e))))
-    (log-i "AfterMediaURI"))
+      (fn [e res] (log-i (str e))))
+    (log-i "AfterMediaURI")))
 
 ;  While using 2 sentence-combining techniques is challenging, demonstrating true
 ;  virtuosity, Felicia, a master of the English language, managed to use all 3 in
