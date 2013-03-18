@@ -2,25 +2,53 @@
   (:gen-class :main false
               :extends android.app.Activity
               :exposes-methods {onCreate superOnCreate})
-  (:import [android R]
-           [android.app Activity]
-           [android.graphics SurfaceTexture]
-           [android.hardware Camera]
-           [android.media MediaPlayer]
-           [android.media.effect EffectContext EffectFactory]
-           [android.opengl GLSurfaceView GLES20 GLES10 GLES11Ext]
-           [android.os Bundle]
-           [android.view View Surface]
-           [com.mccaffrey.nlve R$layout]
-           [java.nio ByteBuffer IntBuffer ByteOrder]
-           [javax.microedition.khronos.egl EGLContext EGL10 EGL])
-  (:use [neko context find-view log activity]
+  (:import
+    [android R]
+    [android.app Activity]
+    [android.graphics SurfaceTexture]
+    [android.hardware Camera]
+    [android.media MediaPlayer]
+    [android.media.effect Effect EffectContext EffectFactory]
+    [android.net Uri]
+    [android.opengl GLSurfaceView GLES20 GLES10 GLES11Ext]
+    [android.os Bundle]
+    [android.view View Surface]
+    [android.widget VideoView]
+    [com.mccaffrey.nlve R$layout]
+    [java.io File]
+    [java.nio ByteBuffer IntBuffer ByteOrder]
+    [javax.microedition.khronos.egl EGLContext EGL10 EGL])
+  (:use [neko activity context find-view log resource ui]
         [neko.listeners view]
+        [neko.ui mapping]
         [com.mccaffrey.utils general gl media media-effects youtube]))
 
 (set! *warn-on-reflection* true)
 
+(set-classname! :gl-surface-view android.opengl.GLSurfaceView :inherits :view)
+(set-classname! :seek-bar android.widget.SeekBar :inherits :view)
+
 (deflog "ImageEffectActivity")
+
+; phone
+(def local-movie-path "/storage/emulated/0/DCIM/Camera/VID_20130301_175709.mp4")
+; tablet
+(def local-content-path "content://media/external/video/media/11205")
+
+(def layout [:linear-layout {:id-holder true
+                             :orientation :vertical
+                             :layout-width :fill-parent
+                             :layout-height :fill-parent}
+             [:seek-bar {:id ::saturation-bar
+                         :layout-width :fill-parent
+                         :layout-height :wrap-content}]
+             [:text-view {:text "This is some sample text"
+                          :layout-width :wrap-content
+                          :layout-height :wrap-content}]
+             [:gl-surface-view {:id ::preview-surface
+                                :layout-width :wrap-content
+                                :layout-height :wrap-content
+                                :visibility :gone}]])
 
 (make-unary-ons frame-available
                 android.graphics.SurfaceTexture$OnFrameAvailableListener
@@ -63,13 +91,6 @@
       :default
       (mod (+ (- (.orientation info) degrees) 360) 360))))
 
-(defn make-effect
-  "Wrapper for MediaEffect creation"
-  [factory str-name]
-  {:pre [(EffectFactory/isEffectSupported str-name)]}
-  (log-i (str "Making effect " str-name))
-  (? (.createEffect factory str-name)))
-
 (defprotocol state-passing-renderer
   "Wrapper for GLSurfaceView$Renderer that passes a state map in and returns an
   updates version."
@@ -91,12 +112,22 @@
         [_ gl10 egl-cfg] 
         (dosync (ref-set state (onSurfaceCreated inner @state gl10 egl-cfg)))))))
 
+(def scale (ref 1))
+
 (defn make-preview-renderer
-  [gl-surface-view video-st mp rotation]
+  [^GLSurfaceView gl-surface-view
+   ^SurfaceTexture video-st
+   ^MediaPlayer mp
+   rotation]
   (wrap-state-passing-renderer
     (reify state-passing-renderer
       (onDrawFrame 
         [_ state gl10] 
+        (.setParameter ^Effect (state :saturate)
+                       "scale"
+                       (float @scale))
+                       ; ^Float ((float 0))
+                       ;(float (Math/sin (state :time))))
         ; TODO remove this
         (.updateTexImage ^SurfaceTexture video-st)
         ; TODO make this at least kinda functionaly
@@ -121,7 +152,7 @@
         (with-program (state :simple-prg)
                       (draw-fs-tex-rect GLES20/GL_TEXTURE_2D 
                                         (state :display-tex)))
-        state)
+        (update-in state [:time] (partial + 0.1)))
       (onSurfaceChanged
         [_ state gl10 w h] 
         (assoc state
@@ -142,9 +173,9 @@
                              (on-frame-available
                                (log-i "preview frame incoming")
                                (.requestRender gl-surface-view))))
-              saturate (-> (EffectContext/createWithCurrentGlContext)
-                         .getFactory
-                         (make-effect EffectFactory/EFFECT_SATURATE))
+              saturate ^Effect (-> (EffectContext/createWithCurrentGlContext)
+                                 .getFactory
+                                 (make-effect EffectFactory/EFFECT_SATURATE))
 
               external-blt-prg (load-program 
                                  ; vertex program
@@ -208,7 +239,9 @@
           ; Enabling GL_TEXTURE_2D is not needed in ES 2.0.
           ; (gl-calls (GLES20/glEnable GLES20/GL_TEXTURE_2D))
 
-          (.setParameter saturate "scale" (float 0))
+          (.setParameter ^Effect saturate
+                         "scale"
+                         ^Float (float 0))
           ;           (doto cam
           ;             (.setPreviewTexture preview-st)
           ;             ; (.setDisplayOrientation
@@ -235,24 +268,23 @@
                  :external-blt-prg external-blt-prg
                  :fbo fbo
                  :buffer-tex buffer-tex
+                 :time 0
                  ))))))
 
-(defn setup-video-view [ctx]
+(defn setup-video-view [^VideoView video-view]
   (fn [uri] 
-    (with-activity
-      ctx
-      (doto (find-view (get-id :video_surf))
-        (.setOnErrorListener
-          (on-media-player-error-call throw-mp-error))
-        (.setOnInfoListener
-          (on-media-player-info-call log-mp-info))
-        (.setOnPreparedListener
-          (on-media-player-prepared
-            (log-i "MediaPlayer prepared")))
-        (.setOnCompletionListener
-          (on-media-player-completion-call log-mp-completion))
-        (.setVideoURI uri)
-        (.start)))))
+    (doto video-view
+      (.setOnErrorListener
+        (on-media-player-error-call throw-mp-error))
+      (.setOnInfoListener
+        (on-media-player-info-call log-mp-info))
+      (.setOnPreparedListener
+        (on-media-player-prepared
+          (log-i "MediaPlayer prepared")))
+      (.setOnCompletionListener
+        (on-media-player-completion-call log-mp-completion))
+      (.setVideoURI uri)
+      (.start))))
 
 ; PICKUP setup mediaplayer for URI and plug it up to a surface-texture
 ; and then to a texture for most excellent GL filtering!
@@ -284,18 +316,18 @@
     ; TODO use async version
     (.prepare)
     (.start)))
+; TODO make these w/o texture name?
 
-(defn setup-filter-view [ctx]
+(defn setup-filter-view [^Activity ctx ^GLSurfaceView preview-surface]
   (fn [uri]
     (log-i "Setup Filter View!")
     (with-activity
+      ; TODO make these w/o texture name?
       ctx
-      (let [preview-surface (find-view (get-id :preview_surface))
-            ; TODO make these w/o texture name?
-            video-st (SurfaceTexture. 0)
-        ; TODO work around stupid finalization bug
-        ; TODO not sure we should do this first...
-        mp (media-player-for-uri *activity* uri video-st)]
+      (let [video-st (SurfaceTexture. 0)
+            ; TODO work around stupid finalization bug
+            ; TODO not sure we should do this first...
+            mp (media-player-for-uri *activity* uri video-st)]
         (doto preview-surface
           (.setEGLContextClientVersion 2)
           (.setPreserveEGLContextOnPause false) ; start with the more bug-prone mode
@@ -303,31 +335,46 @@
           ; Annoyingly, this is broken for ES2 funcs
           ; (.setDebugFlags GLSurfaceView/DEBUG_CHECK_GL_ERROR)
           (.setRenderer (? (make-preview-renderer
-                          preview-surface
-                          video-st
-                          mp
-                          (get-display-rotation *activity*))))
-          ; (.setRenderMode GLSurfaceView/RENDERMODE_WHEN_DIRTY)
-          (.setRenderMode GLSurfaceView/RENDERMODE_CONTINUOUSLY)
+                             preview-surface
+                             video-st
+                             mp
+                             (get-display-rotation *activity*))))
+          (.setRenderMode GLSurfaceView/RENDERMODE_WHEN_DIRTY)
+          ; (.setRenderMode GLSurfaceView/RENDERMODE_CONTINUOUSLY)
           ; Go!
           (.setVisibility View/VISIBLE))))))
 
+(defn ref-updating-seek-bar-listener
+  [ref-to-update]
+  (reify android.widget.SeekBar$OnSeekBarChangeListener
+    (onProgressChanged [this seek-bar progress from-user]
+      (dosync (ref-set scale (- (* 2. (/ (float progress) 100.)) 1.))))
+    (onStartTrackingTouch [this seek-bar])
+    (onStopTrackingTouch [this seek-bar])))
+
 (defn -onCreate
   [^Activity this ^Bundle bundle] 
-  (with-activity
-    this
-    (doto *activity*
-      (.superOnCreate bundle)
-      (.setContentView (get-layout :preview)))
-    ; Test video playback
-    ;
-    (log-i "onCreate")
-    (youtube-media-uri
-      example-id
-      ;(setup-video-view *activity*)
-      (setup-filter-view *activity*)
-      (fn [e res] (log-i (str e))))
-    (log-i "AfterMediaURI")))
+  (with-activity this
+    (log-i (str "this " this "bundle " bundle))
+    (.superOnCreate *activity* bundle)
+    (log-i "post onCreate")
+    (let [tree (make-ui this layout)
+          id-map (.getTag tree)]
+      (.setContentView this tree)
+      ; Test video playback
+      (log-i "onCreate")
+      (.setOnSeekBarChangeListener (::saturation-bar id-map)
+                                   (ref-updating-seek-bar-listener scale))
+      ((setup-filter-view *activity* (::preview-surface id-map))
+         ;(Uri/parse local-content-path))
+      ; TODO make choice more dynamic
+       (Uri/fromFile (File. ^String local-movie-path)))
+      ;    (youtube-media-uri
+      ;      example-id
+      ;      ;(setup-video-view *activity*)
+      ;      (setup-filter-view *activity*)
+      ;      (fn [e res] (log-i (str e))))
+      (log-i "AfterMediaURI"))))
 
 ;  While using 2 sentence-combining techniques is challenging, demonstrating true
 ;  virtuosity, Felicia, a master of the English language, managed to use all 3 in

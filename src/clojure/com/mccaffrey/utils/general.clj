@@ -95,7 +95,7 @@
    :post [(instance? java.lang.Byte %)]}
   (byte (if (>= num 128) (- num 128) num)))
 
-(defn vec-to-float-buffer
+(defn vec-to-float-direct-buffer
   [in]
   (doto (.asFloatBuffer
           (doto (ByteBuffer/allocateDirect (* (count in) float-sz))
@@ -103,7 +103,7 @@
     (.put (float-array in))
     (.position 0)))
 
-(defn vec-to-ubyte-buffer
+(defn vec-to-ubyte-direct-buffer
   [in]
   (doto (ByteBuffer/allocateDirect (* (count in) ubyte-sz))
     (.order (ByteOrder/nativeOrder))

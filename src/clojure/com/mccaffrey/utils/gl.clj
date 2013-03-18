@@ -202,7 +202,7 @@
                        0
                        GLES20/GL_RGBA
                        GLES20/GL_UNSIGNED_BYTE
-                       (vec-to-ubyte-buffer
+                       (vec-to-ubyte-direct-buffer
                          [255 255 255 255
                           255   0   0 255
                           0   255   0 255
@@ -218,7 +218,7 @@
    :type GLES20/GL_FLOAT
    :norm false
    :stride 0
-   :buffer (vec-to-float-buffer
+   :buffer (vec-to-float-direct-buffer
              (if *debug-shrink-fs-rects*
                [-0.75 -0.75,  -0.75,  0.75,  0.75  0.75,  0.75 -0.75]
                [-1. -1.,  -1.   1.,  1.  1.,  1. -1.]))})
@@ -228,7 +228,7 @@
    :type GLES20/GL_FLOAT
    :norm false
    :stride 0
-   :buffer (vec-to-float-buffer
+   :buffer (vec-to-float-direct-buffer
              [0. 0.
               0. 1.
               1. 1.
