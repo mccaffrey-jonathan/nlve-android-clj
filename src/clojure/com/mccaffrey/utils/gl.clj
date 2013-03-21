@@ -313,15 +313,16 @@
        :width width
        :height height)]))
 
+; TODO move this app-specific gl-wrapper somewhere else?
 ; TODO take in re-useable texture ids?
 (defn copy-sampler-external-to-tex
-  [external-tex external-blit-prg fbo]
+  [external-tex progs fbo & {:keys [opacity]}]
   ; TODO macro to gen/bind and unbind/destroy temp FBO?
   (with-framebuffer
     fbo
     ; TODO don't spam recompile programs
     (with-program 
-      external-blit-prg
+      (progs (if (nil? opacity) :external-blit :external-blit-with-opacity))
       (draw-fs-tex-rect
         GLES11Ext/GL_TEXTURE_EXTERNAL_OES
         external-tex))))

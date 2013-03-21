@@ -32,19 +32,47 @@
 
 ; phone
 (def local-movie-path "/storage/emulated/0/DCIM/Camera/VID_20130301_175709.mp4")
+(def local-phone-movie-two "content://media/external/video/media/8113")
+
 ; tablet
 (def local-content-path "content://media/external/video/media/11205")
+
+; TODO include some linking meta-data?
+(def simple-pos-tex-vs
+  "attribute vec2 aPosition;
+  attribute vec2 aTexcoord0;
+
+  varying vec2 vTexcoord0;
+
+  void main() {
+  gl_Position = vec4(aPosition, 0, 1);
+  // Check to pass texcoord from v -> f
+  //vTexcoord0 = vec2(1.0, 0.0);
+  vTexcoord0 = aTexcoord0;
+  }")
 
 (def layout [:linear-layout {:id-holder true
                              :orientation :vertical
                              :layout-width :fill-parent
                              :layout-height :fill-parent}
+             [:text-view {:text "Saturation"
+                          :layout-width :wrap-content
+                          :layout-height :wrap-content}]
              [:seek-bar {:id ::saturation-bar
                          :layout-width :fill-parent
                          :layout-height :wrap-content}]
-             [:text-view {:text "This is some sample text"
+             [:text-view {:text "Fade!"
                           :layout-width :wrap-content
                           :layout-height :wrap-content}]
+             [:seek-bar {:id ::fade-bar
+                         :layout-width :fill-parent
+                         :layout-height :wrap-content}]
+             [:text-view {:text "Seek!"
+                          :layout-width :wrap-content
+                          :layout-height :wrap-content}]
+             [:seek-bar {:id ::seek-bar
+                         :layout-width :fill-parent
+                         :layout-height :wrap-content}]
              [:gl-surface-view {:id ::preview-surface
                                 :layout-width :wrap-content
                                 :layout-height :wrap-content
@@ -112,12 +140,12 @@
         [_ gl10 egl-cfg] 
         (dosync (ref-set state (onSurfaceCreated inner @state gl10 egl-cfg)))))))
 
-(def scale (ref 1))
+(def scale (ref 50))
+(def fade (ref 1))
 
 (defn make-preview-renderer
   [^GLSurfaceView gl-surface-view
-   ^SurfaceTexture video-st
-   ^MediaPlayer mp
+   video-streams
    rotation]
   (wrap-state-passing-renderer
     (reify state-passing-renderer
@@ -125,16 +153,23 @@
         [_ state gl10] 
         (.setParameter ^Effect (state :saturate)
                        "scale"
-                       (float @scale))
+                       (- (* (/ (float @scale) 100.) 2.) 1.))
                        ; ^Float ((float 0))
                        ;(float (Math/sin (state :time))))
         ; TODO remove this
         (.updateTexImage ^SurfaceTexture video-st)
         ; TODO make this at least kinda functionaly
+ 
+        ; Probably some kind of declarative renderer? !
         (copy-sampler-external-to-tex
-          (state :video-tex)
-          (state :external-blt-prg)
+          (get-in state [:tex-streams 0 :tex])
+          (state :progs)
           (state :fbo))
+        (copy-sampler-external-to-tex
+          (get-in state [:tex-streams 1 :tex])
+          (state :progs)
+          (state :fbo)
+          :opacity (/ (float @fade) 100))
         ; Extract apply to a fn
         (apply-effect
           (state :saturate)
@@ -149,7 +184,7 @@
                   (GLES20/glScissor 0 0 (state :w) (state :h))
                   (GLES20/glClearColor 0.8 0.3 0.3 1.0)
                   (GLES20/glClear GLES20/GL_COLOR_BUFFER_BIT))
-        (with-program (state :simple-prg)
+        (with-program (get-in state [:progs :simple])
                       (draw-fs-tex-rect GLES20/GL_TEXTURE_2D 
                                         (state :display-tex)))
         (update-in state [:time] (partial + 0.1)))
@@ -177,59 +212,60 @@
                                  .getFactory
                                  (make-effect EffectFactory/EFFECT_SATURATE))
 
-              external-blt-prg (load-program 
-                                 ; vertex program
-                                 "attribute vec2 aPosition;
-                                 attribute vec2 aTexcoord0;
+              external-blt-with-opacity-prg
+              (load-program
+                simple-pos-tex-vs
+                ; frag shader
+                "
+                #extension GL_OES_EGL_image_external : require
 
-                                 varying vec2 vTexcoord0;
+                precision mediump float;
+                varying vec2 vTexcoord0;
+                uniform samplerExternalOES uSampler;
+                uniform float uOpacity;
 
-                                 void main() {
-                                 gl_Position = vec4(aPosition, 0, 1);
-                                 // Check to pass texcoord from v -> f
-                                 //vTexcoord0 = vec2(1.0, 0.0);
-                                 vTexcoord0 = aTexcoord0;
-                                 }"
-                                 ; frag shader
-                                 "
-                                 #extension GL_OES_EGL_image_external : require
+                void main() {
+                gl_FragColor = texture2D(uSampler, vTexcoord0);
+                gl_FragColor.a *= uOpacity;
 
-                                 precision mediump float;
-                                 varying vec2 vTexcoord0;
-                                 uniform samplerExternalOES uSampler;
+                // gl_FragColor = vec4(0, 1, 0.2, 1);
+                // gl_FragColor = syntax err
+                // Check to make sure texcoord is valid
+                // gl_FragColor = vec4(vTexcoord0, 1, 1);
+                }")
+              external-blt-prg
+              (load-program
+                simple-pos-tex-vs
+                ; frag shader
+                "
+                #extension GL_OES_EGL_image_external : require
 
-                                 void main() {
-                                 gl_FragColor = texture2D(uSampler, vTexcoord0);
-                                 // gl_FragColor = vec4(0, 1, 0.2, 1);
-                                 // gl_FragColor = syntax err
-                                 // Check to make sure texcoord is valid
-                                 // gl_FragColor = vec4(vTexcoord0, 1, 1);
-                                 }")
-              simple-prg (load-program
-                           ; vertex program
-                           "attribute vec2 aPosition;
-                           attribute vec2 aTexcoord0;
+                precision mediump float;
+                varying vec2 vTexcoord0;
+                uniform samplerExternalOES uSampler;
 
-                           varying vec2 vTexcoord0;
+                void main() {
+                gl_FragColor = texture2D(uSampler, vTexcoord0);
+                // gl_FragColor = vec4(0, 1, 0.2, 1);
+                // gl_FragColor = syntax err
+                // Check to make sure texcoord is valid
+                // gl_FragColor = vec4(vTexcoord0, 1, 1);
+                }")
+              simple-prg
+              (load-program
+                simple-pos-tex-vs
+                ; frag shader
+                "precision mediump float;
+                varying vec2 vTexcoord0;
+                uniform sampler2D uSampler;
 
-                           void main() {
-                           gl_Position = vec4(aPosition, 0, 1);
-                           // Check to pass texcoord from v -> f
-                           //vTexcoord0 = vec2(1.0, 0.0);
-                           vTexcoord0 = aTexcoord0;
-                           }"
-                           ; frag shader
-                           "precision mediump float;
-                           varying vec2 vTexcoord0;
-                           uniform sampler2D uSampler;
-
-                           void main() {
-                           gl_FragColor = texture2D(uSampler, vTexcoord0);
-                           // gl_FragColor = vec4(0, 1, 0.2, 1);
-                           // gl_FragColor = syntax err
-                           // Check to make sure texcoord is valid
-                           // gl_FragColor = vec4(vTexcoord0, 1, 1);
-                           }")
+                void main() {
+                gl_FragColor = texture2D(uSampler, vTexcoord0);
+                // gl_FragColor = vec4(0, 1, 0.2, 1);
+                // gl_FragColor = syntax err
+                // Check to make sure texcoord is valid
+                // gl_FragColor = vec4(vTexcoord0, 1, 1);
+                }")
               [fbo buffer-tex] (fbo-tex
                                  GLES20/GL_TEXTURE_2D
                                  GLES20/GL_RGBA
@@ -246,8 +282,9 @@
           ;             (.setPreviewTexture preview-st)
           ;             ; (.setDisplayOrientation
           ;             ;   (front-facing-camera-correction cam-id rotation))
-          ;             (.startPreview))
+          ;             (.startPreview))w
           ;
+
           (doto video-st
             (.detachFromGLContext)
             (.attachToGLContext (video-tex :name))
@@ -261,11 +298,26 @@
           (assoc state
                  :preview-tex preview-tex
                  :display-tex display-tex
-                 :video-tex video-tex
-                 :saturate saturate
-                 :mp mp
-                 :simple-prg simple-prg
-                 :external-blt-prg external-blt-prg
+                 ; TODO Make this associative by index without conv to vec?
+                 :tex-streams (vec (for [stream video-streams]
+                                (let [tex (assoc (gen-texture)
+                                                :width 512
+                                                :height 512)]
+                                  (doto (stream :st)
+                                    (.detachFromGLContext)
+                                    (.attachToGLContext (tex :name))
+                                    (.setOnFrameAvailableListener
+                                      (on-frame-available 
+                                        (log-i "video frame available")
+                                        ; TODO this apparently not safe,
+                                        ; as on-frame-available can be called on any thread.
+                                        ; (.updateTexImage video-st)
+                                        (.requestRender gl-surface-view))))
+                                  (assoc stream :tex tex))))
+                 ; Replace keys with attribute maps?
+                 :progs {:simple simple-prg
+                        :external-blit external-blt-prg
+                        :external-blit-with-opacity external-blt-with-opacity-prg}
                  :fbo fbo
                  :buffer-tex buffer-tex
                  :time 0
@@ -288,7 +340,7 @@
 
 ; PICKUP setup mediaplayer for URI and plug it up to a surface-texture
 ; and then to a texture for most excellent GL filtering!
-(defn media-player-for-uri [ctx uri surface-texture]
+(defn media-player-for-uri [ctx surface-texture uri]
   (doto (^MediaPlayer MediaPlayer.)
     (.setOnErrorListener
       (on-media-player-error-call throw-mp-error))
@@ -319,26 +371,25 @@
 ; TODO make these w/o texture name?
 
 (defn setup-filter-view [^Activity ctx ^GLSurfaceView preview-surface]
-  (fn [uri]
+  (fn [uris]
     (log-i "Setup Filter View!")
     (with-activity
       ; TODO make these w/o texture name?
       ctx
-      (let [video-st (SurfaceTexture. 0)
-            ; TODO work around stupid finalization bug
-            ; TODO not sure we should do this first...
-            mp (media-player-for-uri *activity* uri video-st)]
+      (let [tex-streams ]
         (doto preview-surface
           (.setEGLContextClientVersion 2)
           (.setPreserveEGLContextOnPause false) ; start with the more bug-prone mode
           (.setEGLConfigChooser false) ; no depth
           ; Annoyingly, this is broken for ES2 funcs
           ; (.setDebugFlags GLSurfaceView/DEBUG_CHECK_GL_ERROR)
-          (.setRenderer (? (make-preview-renderer
-                             preview-surface
-                             video-st
-                             mp
-                             (get-display-rotation *activity*))))
+          (.setRenderer (make-preview-renderer
+                          (for [uri uris]
+                            (let [st (SurfaceTexture. 0)]
+                              {:st st
+                               :mp (media-player-for-uri *activity* st uri)}))
+                          preview-surface
+                          (get-display-rotation *activity*)))
           (.setRenderMode GLSurfaceView/RENDERMODE_WHEN_DIRTY)
           ; (.setRenderMode GLSurfaceView/RENDERMODE_CONTINUOUSLY)
           ; Go!
@@ -348,7 +399,7 @@
   [ref-to-update]
   (reify android.widget.SeekBar$OnSeekBarChangeListener
     (onProgressChanged [this seek-bar progress from-user]
-      (dosync (ref-set scale (- (* 2. (/ (float progress) 100.)) 1.))))
+      (dosync (ref-set ref-to-update progress)))
     (onStartTrackingTouch [this seek-bar])
     (onStopTrackingTouch [this seek-bar])))
 
@@ -368,7 +419,9 @@
       ((setup-filter-view *activity* (::preview-surface id-map))
          ;(Uri/parse local-content-path))
       ; TODO make choice more dynamic
-       (Uri/fromFile (File. ^String local-movie-path)))
+       ;(Uri/fromFile (File. ^String local-movie-path)))
+       [(Uri/fromFile (File. ^String local-movie-path))
+         (Uri/parse local-phone-movie-two)])
       ;    (youtube-media-uri
       ;      example-id
       ;      ;(setup-video-view *activity*)
