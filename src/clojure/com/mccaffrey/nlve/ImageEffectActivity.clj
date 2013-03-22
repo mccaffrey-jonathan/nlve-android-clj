@@ -37,6 +37,14 @@
 ; tablet
 (def local-content-path "content://media/external/video/media/11205")
 
+(defn remap-range
+  [[lo-in hi-in] [lo-out hi-out] in]
+  (+ (* (/ (- in lo-in)
+           (- hi-in lo-in))
+        (- hi-out lo-out))
+     lo-out))
+
+
 ; TODO include some linking meta-data?
 (def simple-pos-tex-vs
   "attribute vec2 aPosition;
@@ -153,11 +161,12 @@
         [_ state gl10] 
         (.setParameter ^Effect (state :saturate)
                        "scale"
-                       (- (* (/ (float @scale) 100.) 2.) 1.))
+                       (float (- (* (/ (float @scale) 100.) 2.) 1.)))
                        ; ^Float ((float 0))
                        ;(float (Math/sin (state :time))))
         ; TODO remove this
-        (.updateTexImage ^SurfaceTexture video-st)
+        (doseq [strm (state :tex-streams)]
+          (.updateTexImage ^SurfaceTexture (strm :st)))
         ; TODO make this at least kinda functionaly
  
         ; Probably some kind of declarative renderer? !
@@ -169,7 +178,7 @@
           (get-in state [:tex-streams 1 :tex])
           (state :progs)
           (state :fbo)
-          :opacity (/ (float @fade) 100))
+          :opacity (float (/ (float @fade) 100)))
         ; Extract apply to a fn
         (apply-effect
           (state :saturate)
@@ -285,17 +294,8 @@
           ;             (.startPreview))w
           ;
 
-          (doto video-st
-            (.detachFromGLContext)
-            (.attachToGLContext (video-tex :name))
-            (.setOnFrameAvailableListener
-             (on-frame-available 
-                (log-i "video frame available")
-                ; TODO this apparently not safe,
-                ; as on-frame-available can be called on any thread.
-                ; (.updateTexImage video-st)
-                (.requestRender gl-surface-view))))
           (assoc state
+                 :saturate saturate
                  :preview-tex preview-tex
                  :display-tex display-tex
                  ; TODO Make this associative by index without conv to vec?
@@ -303,7 +303,7 @@
                                 (let [tex (assoc (gen-texture)
                                                 :width 512
                                                 :height 512)]
-                                  (doto (stream :st)
+                                  (doto ^SurfaceTexture (stream :st)
                                     (.detachFromGLContext)
                                     (.attachToGLContext (tex :name))
                                     (.setOnFrameAvailableListener
@@ -341,7 +341,10 @@
 ; PICKUP setup mediaplayer for URI and plug it up to a surface-texture
 ; and then to a texture for most excellent GL filtering!
 (defn media-player-for-uri [ctx surface-texture uri]
-  (doto (^MediaPlayer MediaPlayer.)
+  (? ctx)
+  (? surface-texture)
+  (? uri)
+  (doto ^MediaPlayer (MediaPlayer.)
     (.setOnErrorListener
       (on-media-player-error-call throw-mp-error))
     (.setOnInfoListener
@@ -376,7 +379,6 @@
     (with-activity
       ; TODO make these w/o texture name?
       ctx
-      (let [tex-streams ]
         (doto preview-surface
           (.setEGLContextClientVersion 2)
           (.setPreserveEGLContextOnPause false) ; start with the more bug-prone mode
@@ -384,16 +386,16 @@
           ; Annoyingly, this is broken for ES2 funcs
           ; (.setDebugFlags GLSurfaceView/DEBUG_CHECK_GL_ERROR)
           (.setRenderer (make-preview-renderer
+                          preview-surface
                           (for [uri uris]
                             (let [st (SurfaceTexture. 0)]
                               {:st st
-                               :mp (media-player-for-uri *activity* st uri)}))
-                          preview-surface
+                               :mp (media-player-for-uri ctx st uri)}))
                           (get-display-rotation *activity*)))
           (.setRenderMode GLSurfaceView/RENDERMODE_WHEN_DIRTY)
           ; (.setRenderMode GLSurfaceView/RENDERMODE_CONTINUOUSLY)
           ; Go!
-          (.setVisibility View/VISIBLE))))))
+          (.setVisibility View/VISIBLE)))))
 
 (defn ref-updating-seek-bar-listener
   [ref-to-update]
@@ -407,7 +409,7 @@
   [^Activity this ^Bundle bundle] 
   (with-activity this
     (log-i (str "this " this "bundle " bundle))
-    (.superOnCreate *activity* bundle)
+    (.superOnCreate this bundle)
     (log-i "post onCreate")
     (let [tree (make-ui this layout)
           id-map (.getTag tree)]
@@ -416,12 +418,14 @@
       (log-i "onCreate")
       (.setOnSeekBarChangeListener (::saturation-bar id-map)
                                    (ref-updating-seek-bar-listener scale))
+      (.setOnSeekBarChangeListener (::fade-bar id-map)
+                                   (ref-updating-seek-bar-listener fade))
       ((setup-filter-view *activity* (::preview-surface id-map))
          ;(Uri/parse local-content-path))
       ; TODO make choice more dynamic
        ;(Uri/fromFile (File. ^String local-movie-path)))
-       [(Uri/fromFile (File. ^String local-movie-path))
-         (Uri/parse local-phone-movie-two)])
+         [(Uri/fromFile (File. ^String local-movie-path))
+          (Uri/parse local-phone-movie-two)])
       ;    (youtube-media-uri
       ;      example-id
       ;      ;(setup-video-view *activity*)

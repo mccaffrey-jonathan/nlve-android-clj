@@ -308,8 +308,7 @@
                      GLES20/GL_TEXTURE_2D
                      (tex :name)
                      0))
-                 (check-framebuffer-status)
-                 ))
+                 (check-framebuffer-status)))
        :width width
        :height height)]))
 
@@ -317,12 +316,25 @@
 ; TODO take in re-useable texture ids?
 (defn copy-sampler-external-to-tex
   [external-tex progs fbo & {:keys [opacity]}]
-  ; TODO macro to gen/bind and unbind/destroy temp FBO?
   (with-framebuffer
     fbo
-    ; TODO don't spam recompile programs
     (with-program 
       (progs (if (nil? opacity) :external-blit :external-blit-with-opacity))
+      ; TODO more function-ally
+      ; and preferably a macro so that it 'wraps' around the draw
+      (if (not (nil? opacity))
+        (do 
+          (GLES20/glEnable GLES20/GL_BLEND)
+          (GLES20/glBlendFunc GLES20/GL_SRC_ALPHA GLES20/GL_ONE_MINUS_SRC_ALPHA)
+          ; TODO cache uniform loc
+          (GLES20/glUniform1f
+            (GLES20/glGetUniformLocation
+              (progs :external-blit-with-opacity)
+              "uOpacity")
+            opacity)))
       (draw-fs-tex-rect
         GLES11Ext/GL_TEXTURE_EXTERNAL_OES
-        external-tex))))
+        external-tex)
+      (GLES20/glDisable GLES20/GL_BLEND)
+      )))
+
