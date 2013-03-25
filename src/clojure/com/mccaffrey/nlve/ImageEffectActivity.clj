@@ -75,10 +75,16 @@
              [:seek-bar {:id ::fade-bar
                          :layout-width :fill-parent
                          :layout-height :wrap-content}]
-             [:text-view {:text "Seek!"
+             [:text-view {:text "Seek first!"
                           :layout-width :wrap-content
                           :layout-height :wrap-content}]
-             [:seek-bar {:id ::seek-bar
+             [:seek-bar {:id ::seek-0
+                         :layout-width :fill-parent
+                         :layout-height :wrap-content}]
+             [:text-view {:text "Seek second!"
+                          :layout-width :wrap-content
+                          :layout-height :wrap-content}]
+             [:seek-bar {:id ::seek-1
                          :layout-width :fill-parent
                          :layout-height :wrap-content}]
              [:gl-surface-view {:id ::preview-surface
@@ -150,6 +156,8 @@
 
 (def scale (ref 50))
 (def fade (ref 1))
+(def seeks (vec (for [_ (range 2)]
+                 (ref nil))))
 
 (defn make-preview-renderer
   [^GLSurfaceView gl-surface-view
@@ -164,7 +172,19 @@
                        (float (- (* (/ (float @scale) 100.) 2.) 1.)))
                        ; ^Float ((float 0))
                        ;(float (Math/sin (state :time))))
-        ; TODO remove this
+        ; TODO remove this!!!!
+        ; SCARY! TRANSACTION + MAJOR SIDE EFFECT!
+        ; BAAAAD CLOJURE!!!!
+        (dosync 
+          (letfn [(seek-to [perc mp]
+                    (if perc (.seekTo mp 
+                                      (-> (.getDuration mp)
+                                        (* perc)
+                                        (/ 100)
+                                        int))
+                                      nil))]
+            (doseq [[seek-ref strm] (map vector seeks (state :tex-streams))]
+              (alter seek-ref seek-to (strm :mp)))))
         (doseq [strm (state :tex-streams)]
           (.updateTexImage ^SurfaceTexture (strm :st)))
         ; TODO make this at least kinda functionaly
@@ -196,7 +216,11 @@
         (with-program (get-in state [:progs :simple])
                       (draw-fs-tex-rect GLES20/GL_TEXTURE_2D 
                                         (state :display-tex)))
-        (update-in state [:time] (partial + 0.1)))
+
+        ; This isn't perfect, it'll update the state after rendering... 
+        ; move it ahead somehow?
+        (update-in state [:time] (partial + 0.1))) 
+
       (onSurfaceChanged
         [_ state gl10 w h] 
         (assoc state
@@ -416,10 +440,15 @@
       (.setContentView this tree)
       ; Test video playback
       (log-i "onCreate")
+      ; TODO this is getting repetitive
       (.setOnSeekBarChangeListener (::saturation-bar id-map)
                                    (ref-updating-seek-bar-listener scale))
       (.setOnSeekBarChangeListener (::fade-bar id-map)
                                    (ref-updating-seek-bar-listener fade))
+      (.setOnSeekBarChangeListener (::seek-0 id-map)
+                                   (ref-updating-seek-bar-listener (seeks 0)))
+      (.setOnSeekBarChangeListener (::seek-1 id-map)
+                                   (ref-updating-seek-bar-listener (seeks 1)))
       ((setup-filter-view *activity* (::preview-surface id-map))
          ;(Uri/parse local-content-path))
       ; TODO make choice more dynamic
