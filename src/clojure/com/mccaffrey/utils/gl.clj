@@ -34,7 +34,7 @@
 (def 
   ^{:doc "Shrink fs rects to 3/4ths size of debugging"
     :dynamic true}
-  *debug-shrink-fs-rects* true)
+  *debug-shrink-fs-rects* false)
 
 (def 
   ^{:doc "Print all gl-calls with args"
@@ -261,8 +261,6 @@
      (setup-texture target# ~tex ~unit ~uniform-name)
      ~@body
     (GLES20/glBindTexture target# 0)))
-
-
 
 (defn setup-texture
   "Setup a texture for rendering with a program."

@@ -108,6 +108,11 @@
                 onVideoSizeChanged
                 [this mp w h])
 
+(defn get-video-size
+  "Get video size as a [w h] vector"
+  [mp]
+  [(.getVideoWidth mp) (.getVideoHeight mp)])
+
 ; (defmacro make-on-body
 ;   [call-version-sym]
 ;   (let [macro-version 

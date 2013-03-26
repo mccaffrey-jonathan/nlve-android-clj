@@ -233,14 +233,6 @@
               ; [w h] (get-preview-size cam)
               preview-tex (make-2x2-texture)
               display-tex (gen-texture)
-              video-tex (assoc (gen-texture)
-                               :width 512
-                               :height 512)
-              preview-st (doto (SurfaceTexture. (preview-tex :name))
-                           (.setOnFrameAvailableListener
-                             (on-frame-available
-                               (log-i "preview frame incoming")
-                               (.requestRender gl-surface-view))))
               saturate ^Effect (-> (EffectContext/createWithCurrentGlContext)
                                  .getFactory
                                  (make-effect EffectFactory/EFFECT_SATURATE))
