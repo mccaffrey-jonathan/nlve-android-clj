@@ -54,6 +54,11 @@
   [this mp what extra]
   (throw (Throwable. (fmt-mp-error what extra))))
 
+(defn log-mp-error
+  [this mp what extra]
+  (log-i (fmt-mp-error what extra))
+  true)
+
 (defn log-mp-info
   [this mp what extra]
   (log-i (fmt-mp-info what extra))
