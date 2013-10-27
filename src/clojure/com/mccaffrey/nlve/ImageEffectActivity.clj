@@ -18,6 +18,8 @@
     [android.opengl GLSurfaceView GLES20 GLES10 GLES11Ext]
     [android.os Bundle]
     [android.view 
+     GestureDetector
+     GestureDetector$SimpleOnGestureListener
      MotionEvent
      View
      ViewGroup
@@ -35,7 +37,7 @@
      RelativeLayout$LayoutParams
      TextView
      VideoView]
-    [com.mccaffrey.nlve R$id R$layout]
+    [com.mccaffrey.nlve ImageEffectActivity R$id R$layout]
     [java.io File]
     [java.nio ByteBuffer IntBuffer ByteOrder]
     [javax.microedition.khronos.egl EGLContext EGL10 EGL]
@@ -44,6 +46,7 @@
         [neko.listeners view]
         [neko.ui mapping]
         [com.mccaffrey.utils general gl media media-effects youtube]))
+
 
 (set! *warn-on-reflection* true)
 
@@ -505,6 +508,12 @@
     (* 60)
     s2ms))
 
+(defn hr2ms
+  [hr]
+  (-> hr
+    (* 60)
+    min2ms))
+
 ; TODO
 ; A decent starting data-structure for tracks would be
 ; a vector of tracks,
@@ -525,48 +534,84 @@
 
 ; Just scale by width.  Useful for widths/measures/etc
 (defn scale-ms-to-pix
-  [ms]
+  [ms & {:keys [vp] :or {vp *vp*}}]
   (-> ms
-    (* (*vp* :pixel-window-width))
-    (/ (*vp* :ms-window-width))
+    (* (vp :pixel-window-width))
+    (/ (vp :ms-window-width))
+    (int)))
+
+; Just scale by width.  Useful for widths/measures/etc
+(defn scale-pix-to-ms
+  [pix & {:keys [vp] :or {vp *vp*}}]
+  (-> pix
+    (* (vp :ms-window-width))
+    (/ (vp :pixel-window-width))
     (int)))
 
 (defn transform-ms-to-pix
-  [ms]
+  [ms & {:keys [vp] :or {vp *vp*}}]
   (scale-ms-to-pix
-    (- ms (*vp* :ms-window-start))))
+    (- ms (vp :ms-window-start))))
+
+
+; TODO real impl
+(defn filter-intersects-vp
+  [track]
+  track)
+
+(defn indexed
+  [xs]
+  (map vector (range) xs))
+
 
 ; TODO something more data-bind-ey
 ; If that thing doesn't exit, be a good project
 ; Backbone or whatnot for android + clojure
 (defn track-view
-  [track]
-  (do-let [layout (doto (RelativeLayout. *activity*)
-                    (.setMinimumHeight 50))]
-          (doseq [clip track]
-            (.addView layout
-                      (doto ^TextView (TextView. *activity*)
-                        (.setText ^String (clip :txt))
-                        (.setBackgroundColor Color/YELLOW)
-                        (.setSingleLine true))
-                      (do-let
-                        [params (RelativeLayout$LayoutParams.
-                                                ^Integer (scale-ms-to-pix
-                                                           (clip :length-ms))
-                                                ^Integer ViewGroup$LayoutParams/FILL_PARENT)]
-                        (set! (. params leftMargin) 
-                              (transform-ms-to-pix (clip :start-ms))))))))
+  [convertView track]
+  (do-let [layout (or convertView
+                      (doto (RelativeLayout. *activity*)
+                        (.setMinimumHeight 50)))]
+          (let [vp-track (filter-intersects-vp track)
+                ; Not sure if this'd be memo-ized nicely otherwise
+                cnt-vp-track (count vp-track)
+                cnt-layout (.getChildCount ^RelativeLayout layout)]
+            ; First, knock-off any views we don't need from the end
+            (doseq [idx (reverse (range cnt-vp-track cnt-layout))]
+              (.removeViewAt ^RelativeLayout layout ^Integer idx))
+            (doseq [[idx clip] (indexed vp-track)]
+              (do-let [tv ^TextView
+                         ; Add views we need onto the end
+                         (if (< idx cnt-layout)
+                           (.getChildAt ^RelativeLayout layout ^Integer idx)
+                           (do-let [tv ^TextView (TextView. *activity*)]
+                                   (.addView ^RelativeLayout layout
+                                             ^TextView tv
+                                             ^RelativeLayout$LayoutParams
+                                             (RelativeLayout$LayoutParams.
+                                                             0 ; We have to provide some width... real one set below
+                                                             ^Integer ViewGroup$LayoutParams/FILL_PARENT))))]
+                      (.setText ^TextView tv ^String (clip :txt))
+                      (.setBackgroundColor ^TextView tv Color/YELLOW)
+                      (.setSingleLine ^TextView tv true)
+              ^Integer (scale-ms-to-pix
+                         (clip :length-ms))
+                      (set! (. ^RelativeLayout$LayoutParams
+                               (.getLayoutParams ^TextView tv) width)
+                            (scale-ms-to-pix (clip :length-ms)))
+                      (set! (. ^RelativeLayout$LayoutParams
+                               (.getLayoutParams ^TextView tv) leftMargin)
+                            (transform-ms-to-pix (clip :start-ms))))))))
 
 ; we use the zoom levels for ticks/labeling that are the appropriate size
 ; for our current zoom.
 (def ruler-ticks-in-ms
-  (sorted-set 
-    100
-   (s2ms 1)
-   (s2ms 5)
-   (s2ms 10)
-   (s2ms 60)
-   (min2ms 5)))
+  (apply sorted-set 
+         100 ; ms
+         (concat
+           (map s2ms [1 2 3 5 10 30 60])
+           (map min2ms [5 10 30])
+           (map hr2ms [1 2 4 6 8 12 24]))))
 
 ; func in case it needs to think about it
 (defn max-num-divisions-per-screen [] 10)
@@ -588,8 +633,9 @@
       (last ruler-ticks-in-ms)))
 
 (defn ticks-ms-for-viewport []
-  (? *vp*)
   (let [tick-ms (tick-ms-for-viewport)
+        ms-window-end (+ (*vp* :ms-window-width)
+                         (*vp* :ms-window-start))
         start-tick (-> *vp*
                      :ms-window-start
                      (/ tick-ms)
@@ -598,9 +644,10 @@
                      (* tick-ms))]
     (for [i (range)
           :let [ms-offset (+ start-tick (* i tick-ms))]
-          :while (< ms-offset (*vp* :ms-window-width))]
-      (+ ms-offset (*vp* :ms-window-start)))))
+          :while (< ms-offset ms-window-end)]
+      ms-offset)))
 
+; TODO this doesn't translate happily
 ; TODO make some ViewportParams struct, i've been writing
 ; pixel-window ms-window
 ; alot.
@@ -612,9 +659,9 @@
           (.setOrientation LinearLayout/VERTICAL)
           ; TODO add a line here
           (.addView (doto ^TextView (TextView. *activity*)
-                      (.setText ^String (short-pp-time ms)))))
-          (do-let
-            [params (RelativeLayout$LayoutParams. 
+                      (.setText ^String (short-pp-time ms))
+                      (.setSingleLine true))))
+          (do-let [params (RelativeLayout$LayoutParams. 
                                     ViewGroup$LayoutParams/WRAP_CONTENT
                                     ViewGroup$LayoutParams/WRAP_CONTENT)]
              ; TODO just setting left margin is going to push these to the side..
@@ -622,10 +669,10 @@
                    (transform-ms-to-pix ms)))))))
 
 (defn update-timeline-adapter
-  [^ArrayAdapter adapter timeline]
-  (.clear adapter)
-  (.addAll adapter ^Collection timeline))
-
+  [^ArrayAdapter adapter ^ArrayList l timeline]
+  (.clear l)
+  (.addAll l ^Collection timeline)
+  (.notifyDataSetChanged adapter))
 
   (defn update-zoom-timeline-layout
     [^ViewGroup zoom-layout timeline]
@@ -633,10 +680,8 @@
     (.removeViewAt zoom-layout 0)
     (.addView zoom-layout ^View (time-ruler) 0)
     ; Can't use thread-first, hard to type-hint
-    (update-timeline-adapter
-      (.getAdapter
-        ^ListView (.getChildAt zoom-layout 1))
-      timeline)
+    (let [lv ^ListView (.getChildAt zoom-layout 1)]
+      (update-timeline-adapter (.getAdapter lv) (.getTag lv) timeline))
     ; TODO find a more subtle way to invalidate these
     (.invalidate zoom-layout))
 
@@ -647,18 +692,18 @@
 
 (defn make-timeline-adapter
   []
-  (let [act *activity*] 
-    (proxy [ArrayAdapter] [^Context *activity*
-                           0 ; textviewresid
-                           ^List (ArrayList.)]
-      (getView [position convertView parent]
-        ; TODO change where seconds is calced
-        (with-activity
-          act
-          (with-vp
-            (@*activity* :vp)
-            (let [this ^ArrayAdapter this]
-              (track-view (proxy-super getItem ^Integer position)))))))))
+  (let [l ^List (ArrayList.)
+        act *activity*] 
+    [(proxy [ArrayAdapter] [^Context *activity* 0 l]
+       (getView [position convertView parent]
+         ; TODO change where seconds is calced
+         (with-activity
+           act
+           (with-vp
+             (@*activity* :vp)
+             (let [this ^ArrayAdapter this]
+               (track-view convertView
+                           (proxy-super getItem ^Integer position))))))) l]))
 
 ; TODO should this be X-only?  It's doable.
 ; scale to keep the
@@ -680,12 +725,16 @@
   [sf fx]
   (fn [vp]
     (assoc vp
-           :pixel-window-width
-           (* sf (vp :pixel-window-width))
+           :ms-window-width
+           (/ (vp :ms-window-width) sf)
            :ms-window-start
            (+ (* sf (vp :ms-window-start))
               (* (- 1.0 sf)
                  (transform-pix-to-ms fx :vp vp))))))
+
+(defn vp-translater-pix
+  [dx]
+  (fn [vp] (update-in vp [:ms-window-start] + (scale-pix-to-ms dx :vp vp))))
 
 (declare modify-viewport)
 
@@ -699,13 +748,21 @@
           (modify-viewport
             (vp-scaler (.getScaleFactor detector)
                        (.getFocusX detector))))
-        ^ScaleGestureDetector detector 
+        ^ScaleGestureDetector sc-detector
         (ScaleGestureDetector.
-          *activity*
+          ^Context *activity*
+          ^ScaleGestureDetector$OnScaleGestureListener
           (proxy [ScaleGestureDetector$OnScaleGestureListener] []
-            (onScaleBegin [detector] (rescale-from-detector detector))
-            (onScale [detector] (rescale-from-detector detector))
-            (onScaleEnd [detector] (rescale-from-detector detector))))]
+            (onScaleBegin [sc-detector] (rescale-from-detector sc-detector))
+            (onScale [sc-detector] (rescale-from-detector sc-detector))
+            (onScaleEnd [sc-detector] (rescale-from-detector sc-detector))))
+        ^GestureDetector detector
+        (GestureDetector.
+          ^Context *activity*
+          ^GestureDetector$SimpleOnGestureListener
+          (proxy [GestureDetector$SimpleOnGestureListener] []
+            (onScroll [e1 e2d dx dy]
+              (modify-viewport (vp-translater-pix dx)))))]
     (let [local-act *activity*]
       (proxy [LinearLayout] [*activity*]
         ; TODO do something more subtle than steal all events
@@ -715,6 +772,8 @@
         (onTouchEvent [^MotionEvent ev]
           (with-activity local-act
             (log-i "LinearLayout onTouchEvent")
+            ; TODO do we need to check the return values of these?
+            (.onTouchEvent sc-detector ev)
             (.onTouchEvent detector ev)
             (let [^LinearLayout this this]
               (proxy-super onTouchEvent ev))
@@ -733,9 +792,11 @@
         (doto ^LinearLayout (zoom-timeline-layout)
           (.setOrientation LinearLayout/VERTICAL)
           (.addView (time-ruler))
-          (.addView (doto (ListView. *activity*)
-                      (.setAdapter (make-timeline-adapter))))))
-
+          (.addView 
+            (let [[adapter l] (make-timeline-adapter)]
+              (doto (ListView. *activity*)
+                (.setAdapter adapter)
+                (.setTag l))))))
       (update-zoom-timeline-layout timeline))))
 
 (defmacro wrap-cb-with-bindings
@@ -749,14 +810,24 @@
          (apply ~cb args#))))))
 
 (defn update-ui-for-state []
-    (swap! (.state *activity*) assoc :vc  
-      (apply update-ui-to-timeline (map @(.state *activity*) [:vc :model :vp]))))
+    (swap! (.state ^ImageEffectActivity *activity*) assoc :vc  
+      (apply update-ui-to-timeline (map @(.state ^ImageEffectActivity *activity*) [:vc :model :vp]))))
+
+(def min-vp-width-ms 50)
+(def max-vp-width-ms (hr2ms 24))
+(defn vp-validate
+  [vp]
+  ; We should only go so skinny
+  (-> (? vp)
+    (update-in [:ms-window-width] max min-vp-width-ms)
+    (update-in [:ms-window-width] min max-vp-width-ms)
+    (update-in [:ms-window-start] max 0)))
 
 (defn modify-viewport
   [vp-fn]
-  (swap! (.state *activity*)
+  (swap! (.state ^ImageEffectActivity *activity*)
          (fn [old-state]
-           (do-let [new-state (update-in old-state [:vp] vp-fn)]
+           (do-let [new-state (update-in old-state [:vp] (comp vp-validate vp-fn))]
                    (log-i (str {:old (old-state :vp)
                                 :new (new-state :vp)})))))
   ; TODO only do this if it really changed
@@ -773,7 +844,7 @@
 ; Cute trick to shorten addressing
 (defn -deref
   [this]
-  @(.state this))
+  @(.state ^ImageEffectActivity this))
 
 (defn -onCreate
   [^Activity this ^Bundle bundle] 
@@ -788,7 +859,7 @@
     ;
 
     ; Start a base spot
-    (reset! (.state this) {:vc nil
+    (reset! (.state ^ImageEffectActivity this) {:vc nil
                            :model demo-timeline-structure
                            :vp {:pixel-window-width 700
                                 :ms-window-start 0
