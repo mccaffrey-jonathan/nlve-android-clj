@@ -6,7 +6,7 @@
            [javax.microedition.khronos.egl EGLContext EGL10 EGL])
   (:use [neko log]))
 
-(deflog "utils/general")
+(deflog "nlve-android")
 
 ; TODO add docstr, meta, etc.
 (defmacro make-unary-ons

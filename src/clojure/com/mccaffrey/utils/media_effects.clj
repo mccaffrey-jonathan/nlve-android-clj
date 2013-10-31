@@ -5,7 +5,7 @@
         [neko log]))
 
 (set! *warn-on-reflection* true)
-(deflog "media-effects")
+; (deflog "media-effects")
 
 (defn apply-effect
   [^Effect effect src-tex dst-tex]

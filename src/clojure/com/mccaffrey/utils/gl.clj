@@ -7,7 +7,7 @@
 
 (set! *warn-on-reflection* true)
 
-(deflog "utils/gl")
+; (deflog "utils/gl")
 
 (def 
   ^{:doc "The current program to operate on"

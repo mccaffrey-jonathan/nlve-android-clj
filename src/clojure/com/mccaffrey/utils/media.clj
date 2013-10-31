@@ -4,7 +4,7 @@
   (:use [com.mccaffrey.utils general]
         [neko log]))
 
-(deflog "utils/media")
+; (deflog "utils/media")
 
 ; TODO prints are still falling through, clean that up
 (defmacro case-print

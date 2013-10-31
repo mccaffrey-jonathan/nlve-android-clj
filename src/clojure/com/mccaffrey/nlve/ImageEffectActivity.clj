@@ -1,11 +1,11 @@
 (ns com.mccaffrey.nlve.ImageEffectActivity
-  (:gen-class :main false
-              :init init
-              :implements   [clojure.lang.IDeref]
-              :state state
-              :extends android.app.Activity
-              :constructors {[] []}
-              :exposes-methods {onCreate superOnCreate})
+;  (:gen-class :main false
+;              :init init
+;              :implements [clojure.lang.IDeref]
+;              :state state
+;              :extends android.app.Activity
+;              :constructors {[] []}
+;              :exposes-methods {onCreate superOnCreate})
   (:import
     [android R]
     [android.app Activity FragmentManager FragmentTransaction ListFragment]
@@ -42,7 +42,7 @@
     [java.nio ByteBuffer IntBuffer ByteOrder]
     [javax.microedition.khronos.egl EGLContext EGL10 EGL]
     [java.util ArrayList Collection])
-  (:use [neko activity context find-view log resource ui]
+  (:use [neko activity context find-view init log resource ui]
         [neko.listeners view]
         [neko.ui mapping]
         [com.mccaffrey.utils general gl media media-effects youtube]))
@@ -50,10 +50,10 @@
 
 (set! *warn-on-reflection* true)
 
-(set-classname! :gl-surface-view android.opengl.GLSurfaceView :inherits :view)
-(set-classname! :seek-bar android.widget.SeekBar :inherits :view)
+(set-classname! :gl-surface-view "android.opengl.GLSurfaceView")
+(set-classname! :seek-bar "android.widget.SeekBar")
 
-(deflog "ImageEffectActivity")
+; (deflog "ImageEffectActivity")
 
 ;(def debug-device :tablet)
  (def debug-device :phone)
@@ -855,6 +855,7 @@
     (.setContentView this R$layout/timeline)
     ; Test video playback
     (log-i "onCreate")
+    (neko.init/init (.getApplicationContext this))
     ; (add-fragment this R$id/fragment_spot )
     ;
 

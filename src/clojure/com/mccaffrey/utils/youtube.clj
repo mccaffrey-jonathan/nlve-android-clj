@@ -6,7 +6,7 @@
   (:use [com.mccaffrey.utils general]
         [neko log]))
 
-(deflog "utils/youtube")
+; (deflog "utils/youtube")
 
 ; You-Tube playback cribbed from (Apache licensed)
 ; http://code.google.com/p/android-youtube-player/
