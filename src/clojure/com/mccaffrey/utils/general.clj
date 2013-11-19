@@ -28,6 +28,10 @@
               (fn [~@'~args] ~@~body-sym))))))
 
 (defmacro do-let
+  "Bind init-expr to binding-form, then execute body,
+  then return the binding-form.  It is assumed that body will
+  use binding-form and have some side-effects, for example, for logging
+  or initialization"
   [[binding-form init-expr] & body]
   `(let [~binding-form ~init-expr]
      ~@body

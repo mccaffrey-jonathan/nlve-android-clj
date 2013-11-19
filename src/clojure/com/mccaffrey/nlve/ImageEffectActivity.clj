@@ -30,6 +30,7 @@
      Surface]
     [android.widget
      ArrayAdapter
+     HorizontalScrollView
      ListView
      LinearLayout
      FrameLayout$LayoutParams
@@ -563,45 +564,68 @@
   [xs]
   (map vector (range) xs))
 
+(defn make-track-layout [convertView]
+  (or convertView
+      (doto (proxy [RelativeLayout] [*activity*]
+              (onTouchEvent [_] false))
+      ; (doto (RelativeLayout. *activity*)
+        ; TODO Like styles, can we refer to an XML template for behavior?
+        (.setFocusable false)
+        (.setClickable false)
+        (.setContentDescription "RelativeLayout containing clips")
+        (.setMinimumHeight 50))))
+
+; TODO lookup Android equivalent to CSS.  Use it.
+(defn set!-clipview-for-clip
+  [^TextView tv clip]
+  (doto tv
+    (.setText ^String (clip :txt)))
+  (set! (. ^RelativeLayout$LayoutParams
+           (.getLayoutParams tv) width)
+        (scale-ms-to-pix (clip :length-ms)))
+  (set! (. ^RelativeLayout$LayoutParams
+           (.getLayoutParams tv) leftMargin)
+        ; No transformation, handle that with scrollview?
+        (scale-ms-to-pix (clip :start-ms))))
+
+(defn add-or-get-clipview-from-layout
+  [layout idx]
+  (if (< idx (.getChildCount ^RelativeLayout layout))
+    (.getChildAt ^RelativeLayout layout ^Integer idx)
+    (do-let [tv ^TextView (TextView. *activity*)]
+            (doto tv
+              (.setContentDescription "TextView for clip")
+              (.setClickable true)
+              (.setLongClickable true)
+              (.setBackgroundColor Color/BLUE)
+              (.setSingleLine true))
+            (.addView ^RelativeLayout layout
+                      ^TextView tv
+                      ^RelativeLayout$LayoutParams
+                      (RelativeLayout$LayoutParams.
+                        0 ; We have to provide some width... real one set below
+                        ^Integer ViewGroup$LayoutParams/FILL_PARENT)))))
 
 ; TODO something more data-bind-ey
 ; If that thing doesn't exit, be a good project
 ; Backbone or whatnot for android + clojure
 (defn track-view
+  "This needs to take this back-ackwards convertView argument
+  so that it's a nicely behaved Adapter."
   [convertView track]
-  (do-let [layout (or convertView
-                      (doto (RelativeLayout. *activity*)
-                        (.setMinimumHeight 50)))]
-          (let [vp-track (filter-intersects-vp track)
+  (do-let [^RelativeLayout layout (make-track-layout convertView)]
+          (let [; ^RelativeLayout layout (.getChildAt ^ViewGroup scroller 0)
+                vp-track (filter-intersects-vp track)
                 ; Not sure if this'd be memo-ized nicely otherwise
                 cnt-vp-track (count vp-track)
                 cnt-layout (.getChildCount ^RelativeLayout layout)]
             ; First, knock-off any views we don't need from the end
-            (doseq [idx (reverse (range cnt-vp-track cnt-layout))]
-              (.removeViewAt ^RelativeLayout layout ^Integer idx))
+            (doseq [^Integer idx (reverse (range cnt-vp-track cnt-layout))]
+              (.removeViewAt layout idx))
+            ; Add views we need onto the end
             (doseq [[idx clip] (indexed vp-track)]
-              (do-let [tv ^TextView
-                         ; Add views we need onto the end
-                         (if (< idx cnt-layout)
-                           (.getChildAt ^RelativeLayout layout ^Integer idx)
-                           (do-let [tv ^TextView (TextView. *activity*)]
-                                   (.addView ^RelativeLayout layout
-                                             ^TextView tv
-                                             ^RelativeLayout$LayoutParams
-                                             (RelativeLayout$LayoutParams.
-                                                             0 ; We have to provide some width... real one set below
-                                                             ^Integer ViewGroup$LayoutParams/FILL_PARENT))))]
-                      (.setText ^TextView tv ^String (clip :txt))
-                      (.setBackgroundColor ^TextView tv Color/YELLOW)
-                      (.setSingleLine ^TextView tv true)
-              ^Integer (scale-ms-to-pix
-                         (clip :length-ms))
-                      (set! (. ^RelativeLayout$LayoutParams
-                               (.getLayoutParams ^TextView tv) width)
-                            (scale-ms-to-pix (clip :length-ms)))
-                      (set! (. ^RelativeLayout$LayoutParams
-                               (.getLayoutParams ^TextView tv) leftMargin)
-                            (transform-ms-to-pix (clip :start-ms))))))))
+              (set!-clipview-for-clip
+                (add-or-get-clipview-from-layout layout idx) clip)))))
 
 ; we use the zoom levels for ticks/labeling that are the appropriate size
 ; for our current zoom.
@@ -649,8 +673,7 @@
 
 ; TODO this doesn't translate happily
 ; TODO make some ViewportParams struct, i've been writing
-; pixel-window ms-window
-; alot.
+; pixel-window ms-window alot.
 (defn time-ruler []
   (do-let [rel (RelativeLayout. *activity*)]
     (doseq [ms (ticks-ms-for-viewport)]
@@ -674,16 +697,17 @@
   (.addAll l ^Collection timeline)
   (.notifyDataSetChanged adapter))
 
-  (defn update-zoom-timeline-layout
-    [^ViewGroup zoom-layout timeline]
-    ; Just add a new ruler?
-    (.removeViewAt zoom-layout 0)
-    (.addView zoom-layout ^View (time-ruler) 0)
-    ; Can't use thread-first, hard to type-hint
-    (let [lv ^ListView (.getChildAt zoom-layout 1)]
-      (update-timeline-adapter (.getAdapter lv) (.getTag lv) timeline))
+(defn update-zoom-timeline-layout
+  [^RelativeLayout zoom-layout timeline]
+  ; TODO don't just add a new ruler
+  (.removeViewAt zoom-layout 0)
+  (.addView zoom-layout ^View (time-ruler) 0)
+  ; Can't use thread-first, hard to type-hint
+  (let [^HorizontalScrollView scrollview (.getChildAt zoom-layout 1)
+        ^ListView lv (.getChildAt scrollview 0)]
     ; TODO find a more subtle way to invalidate these
-    (.invalidate zoom-layout))
+    (update-timeline-adapter (.getAdapter lv) (.getTag lv) timeline))
+  (.invalidate zoom-layout))
 
 (defmacro with-vp
   [vp & body]
@@ -767,25 +791,25 @@
       (proxy [LinearLayout] [*activity*]
         ; TODO do something more subtle than steal all events
         (onInterceptTouchEvent [^MotionEvent ev]
-          (log-i "LinearLayout onInterceptTouchEvent")
-          true)
+          (.onTouchEvent sc-detector ev)
+          (.isInProgress sc-detector))
         (onTouchEvent [^MotionEvent ev]
-          (with-activity local-act
-            (log-i "LinearLayout onTouchEvent")
-            ; TODO do we need to check the return values of these?
-            (.onTouchEvent sc-detector ev)
-            (.onTouchEvent detector ev)
-            (let [^LinearLayout this this]
-              (proxy-super onTouchEvent ev))
-            true
-            ))))))
+          (log-i "scaling-detecting proxy [LinearLayout] onTouchEvent")
+          ; TODO do we need to check the return values of these?
+          (.onTouchEvent sc-detector ev)
+          (.isInProgress sc-detector)
+          ; (.onTouchEvent detector ev)
+          ; Do we need to give proxy-super a shot?
+          ; (let [^LinearLayout this this]
+          ;  (proxy-super onTouchEvent ev))
+          )))))
 
 ; For new, traverse whole structure and update all ui elements to match
 ; This may/may not scale.
+; Hint, it doesn't scale.
 (defn update-ui-to-timeline
   [ui timeline vp]
-  (with-vp
-    vp
+  (with-vp vp
     (doto
       (if ui
         ui ; TODO update path
@@ -793,10 +817,17 @@
           (.setOrientation LinearLayout/VERTICAL)
           (.addView (time-ruler))
           (.addView 
-            (let [[adapter l] (make-timeline-adapter)]
-              (doto (ListView. *activity*)
-                (.setAdapter adapter)
-                (.setTag l))))))
+            (doto (HorizontalScrollView. *activity*)
+              (.setFocusable false)
+              (.setClickable false)
+              (.setHorizontalScrollBarEnabled false)
+              (.addView
+                (let [[adapter l] (make-timeline-adapter)]
+                  (doto (ListView. *activity*)
+                    (.setFocusable false)
+                    (.setClickable false)
+                    (.setAdapter adapter)
+                    (.setTag l))))))))
       (update-zoom-timeline-layout timeline))))
 
 (defmacro wrap-cb-with-bindings
@@ -811,7 +842,9 @@
 
 (defn update-ui-for-state []
     (swap! (.state ^ImageEffectActivity *activity*) assoc :vc  
-      (apply update-ui-to-timeline (map @(.state ^ImageEffectActivity *activity*) [:vc :model :vp]))))
+      (apply update-ui-to-timeline 
+             (map @(.state ^ImageEffectActivity *activity*)
+                  [:vc :model :vp]))))
 
 (def min-vp-width-ms 50)
 (def max-vp-width-ms (hr2ms 24))

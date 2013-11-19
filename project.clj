@@ -11,7 +11,7 @@
   :java-source-paths ["src/java" "gen"]
 
   :dependencies [[org.clojure-android/clojure "1.5.1-jb" :use-resources true]
-                 [neko/neko "3.0.0-preview3"]
+                 ; [neko/neko "3.0.0-preview3"] ; remove dependency to use local 'checkouts'
                  [com.loopj.android/android-async-http "1.4.3"
                   :exclusions [com.android.support/support-v4]]]
 
