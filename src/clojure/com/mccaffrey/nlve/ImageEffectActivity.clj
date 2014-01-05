@@ -8,6 +8,7 @@
 ;              :exposes-methods {onCreate superOnCreate})
   (:import
     [android R]
+    [android.animation AnimatorListenerAdapter ObjectAnimator]
     [android.app Activity FragmentManager FragmentTransaction ListFragment]
     [android.content Context]
     [android.graphics Color SurfaceTexture]
@@ -18,22 +19,14 @@
     [android.opengl GLSurfaceView GLES20 GLES10 GLES11Ext]
     [android.os Bundle]
     [android.view 
-     GestureDetector
-     GestureDetector$SimpleOnGestureListener
-     MotionEvent
      View
      ViewGroup
      ViewGroup$LayoutParams
-     ViewGroup$MarginLayoutParams
-     ScaleGestureDetector
-     ScaleGestureDetector$OnScaleGestureListener
      Surface]
     [android.widget
-     ArrayAdapter
      HorizontalScrollView
      ListView
-     LinearLayout
-     FrameLayout$LayoutParams
+     FrameLayout$LayoutParams 
      RelativeLayout
      RelativeLayout$LayoutParams
      TextView
@@ -43,10 +36,11 @@
     [java.nio ByteBuffer IntBuffer ByteOrder]
     [javax.microedition.khronos.egl EGLContext EGL10 EGL]
     [java.util ArrayList Collection])
-  (:use [neko activity context find-view init log resource ui]
+  (:use [neko activity context find-view init log resource threading ui]
         [neko.listeners view]
         [neko.ui mapping]
-        [com.mccaffrey.utils general gl media media-effects youtube]))
+        [com.mccaffrey.nlve vp timeline-ui]
+        [com.mccaffrey.utils general gl media media-effects time youtube]))
 
 
 (set! *warn-on-reflection* true)
@@ -77,8 +71,6 @@
 (def tablet-movies
   [local-content-path
    assassins-creed-path])
-
-(def ^{:dynamic true} *vp*)
 
 
 ;(defn string-seq-fragment
@@ -492,369 +484,7 @@
 ;    (.add id frag)
 ;    (.commit)))
 
-; TODO is the order right for standard comparator semantics?
-(defn cmp-start-ms
-  [fst scd]
-  (-
-    (fst :start-ms)
-    (scd :start-ms)))
-
-(defn s2ms
-  [s]
-  (* 1000 s))
-
-(defn min2ms
-  [mn]
-  (-> mn
-    (* 60)
-    s2ms))
-
-(defn hr2ms
-  [hr]
-  (-> hr
-    (* 60)
-    min2ms))
-
-; TODO
-; A decent starting data-structure for tracks would be
-; a vector of tracks,
-; a track is mostly a sorted-map of start times to clips?
-; Clip is 'resource' + resource offset + length for now
-;
-; TODO is txt field a keeper?  Maybe make fn...
-; Model!
-(def demo-timeline-structure
-  [(into (sorted-set-by cmp-start-ms)
-                  (for [s (range 10 400 10)]
-                    {:start-ms (s2ms s) :length-ms (s2ms 5) :txt (str "T0C" s)}))
-   (into (sorted-set-by cmp-start-ms)
-                  (for [s (range 25 400 40)]
-                    {:start-ms (s2ms s) :length-ms (s2ms 20) :txt (str "T1C" s)}))
-   (sorted-set-by cmp-start-ms
-                  {:start-ms (s2ms 18) :length-ms (s2ms 10) :txt "Clip 20"})])
-
-; Just scale by width.  Useful for widths/measures/etc
-(defn scale-ms-to-pix
-  [ms & {:keys [vp] :or {vp *vp*}}]
-  (-> ms
-    (* (vp :pixel-window-width))
-    (/ (vp :ms-window-width))
-    (int)))
-
-; Just scale by width.  Useful for widths/measures/etc
-(defn scale-pix-to-ms
-  [pix & {:keys [vp] :or {vp *vp*}}]
-  (-> pix
-    (* (vp :ms-window-width))
-    (/ (vp :pixel-window-width))
-    (int)))
-
-(defn transform-ms-to-pix
-  [ms & {:keys [vp] :or {vp *vp*}}]
-  (scale-ms-to-pix
-    (- ms (vp :ms-window-start))))
-
-
-; TODO real impl
-(defn filter-intersects-vp
-  [track]
-  track)
-
-(defn indexed
-  [xs]
-  (map vector (range) xs))
-
-(defn make-track-layout [convertView]
-  (or convertView
-      (doto (proxy [RelativeLayout] [*activity*]
-              (onTouchEvent [_] false))
-      ; (doto (RelativeLayout. *activity*)
-        ; TODO Like styles, can we refer to an XML template for behavior?
-        (.setFocusable false)
-        (.setClickable false)
-        (.setContentDescription "RelativeLayout containing clips")
-        (.setMinimumHeight 50))))
-
-; TODO lookup Android equivalent to CSS.  Use it.
-(defn set!-clipview-for-clip
-  [^TextView tv clip]
-  (doto tv
-    (.setText ^String (clip :txt)))
-  (set! (. ^RelativeLayout$LayoutParams
-           (.getLayoutParams tv) width)
-        (scale-ms-to-pix (clip :length-ms)))
-  (set! (. ^RelativeLayout$LayoutParams
-           (.getLayoutParams tv) leftMargin)
-        ; No transformation, handle that with scrollview?
-        (scale-ms-to-pix (clip :start-ms))))
-
-(defn add-or-get-clipview-from-layout
-  [layout idx]
-  (if (< idx (.getChildCount ^RelativeLayout layout))
-    (.getChildAt ^RelativeLayout layout ^Integer idx)
-    (do-let [tv ^TextView (TextView. *activity*)]
-            (doto tv
-              (.setContentDescription "TextView for clip")
-              (.setClickable true)
-              (.setLongClickable true)
-              (.setBackgroundColor Color/BLUE)
-              (.setSingleLine true))
-            (.addView ^RelativeLayout layout
-                      ^TextView tv
-                      ^RelativeLayout$LayoutParams
-                      (RelativeLayout$LayoutParams.
-                        0 ; We have to provide some width... real one set below
-                        ^Integer ViewGroup$LayoutParams/FILL_PARENT)))))
-
-; TODO something more data-bind-ey
-; If that thing doesn't exit, be a good project
-; Backbone or whatnot for android + clojure
-(defn track-view
-  "This needs to take this back-ackwards convertView argument
-  so that it's a nicely behaved Adapter."
-  [convertView track]
-  (do-let [^RelativeLayout layout (make-track-layout convertView)]
-          (let [; ^RelativeLayout layout (.getChildAt ^ViewGroup scroller 0)
-                vp-track (filter-intersects-vp track)
-                ; Not sure if this'd be memo-ized nicely otherwise
-                cnt-vp-track (count vp-track)
-                cnt-layout (.getChildCount ^RelativeLayout layout)]
-            ; First, knock-off any views we don't need from the end
-            (doseq [^Integer idx (reverse (range cnt-vp-track cnt-layout))]
-              (.removeViewAt layout idx))
-            ; Add views we need onto the end
-            (doseq [[idx clip] (indexed vp-track)]
-              (set!-clipview-for-clip
-                (add-or-get-clipview-from-layout layout idx) clip)))))
-
-; we use the zoom levels for ticks/labeling that are the appropriate size
-; for our current zoom.
-(def ruler-ticks-in-ms
-  (apply sorted-set 
-         100 ; ms
-         (concat
-           (map s2ms [1 2 3 5 10 30 60])
-           (map min2ms [5 10 30])
-           (map hr2ms [1 2 4 6 8 12 24]))))
-
-; func in case it needs to think about it
-(defn max-num-divisions-per-screen [] 10)
-
-; Make this handle times like 1h2m better
-(defn short-pp-time
-  [time-ms]
-  (cond
-    (mod time-ms 1000) (str (/ time-ms 1000) "s")
-    (mod time-ms (* 1000 60)) (str (/ time-ms 1000) "m")
-    :else "|"))
-
-(defn tick-ms-for-viewport
-  []
-  (or (first (filter
-               #(< (/ (*vp* :ms-window-width) %)
-                   (max-num-divisions-per-screen))
-               ruler-ticks-in-ms))
-      (last ruler-ticks-in-ms)))
-
-(defn ticks-ms-for-viewport []
-  (let [tick-ms (tick-ms-for-viewport)
-        ms-window-end (+ (*vp* :ms-window-width)
-                         (*vp* :ms-window-start))
-        start-tick (-> *vp*
-                     :ms-window-start
-                     (/ tick-ms)
-                     (float)
-                     (Math/ceil)
-                     (* tick-ms))]
-    (for [i (range)
-          :let [ms-offset (+ start-tick (* i tick-ms))]
-          :while (< ms-offset ms-window-end)]
-      ms-offset)))
-
-; TODO this doesn't translate happily
-; TODO make some ViewportParams struct, i've been writing
-; pixel-window ms-window alot.
-(defn time-ruler []
-  (do-let [rel (RelativeLayout. *activity*)]
-    (doseq [ms (ticks-ms-for-viewport)]
-      (.addView rel
-        (doto (LinearLayout. *activity*)
-          (.setOrientation LinearLayout/VERTICAL)
-          ; TODO add a line here
-          (.addView (doto ^TextView (TextView. *activity*)
-                      (.setText ^String (short-pp-time ms))
-                      (.setSingleLine true))))
-          (do-let [params (RelativeLayout$LayoutParams. 
-                                    ViewGroup$LayoutParams/WRAP_CONTENT
-                                    ViewGroup$LayoutParams/WRAP_CONTENT)]
-             ; TODO just setting left margin is going to push these to the side..
-             (set! (. params leftMargin)
-                   (transform-ms-to-pix ms)))))))
-
-(defn update-timeline-adapter
-  [^ArrayAdapter adapter ^ArrayList l timeline]
-  (.clear l)
-  (.addAll l ^Collection timeline)
-  (.notifyDataSetChanged adapter))
-
-(defn update-zoom-timeline-layout
-  [^RelativeLayout zoom-layout timeline]
-  ; TODO don't just add a new ruler
-  (.removeViewAt zoom-layout 0)
-  (.addView zoom-layout ^View (time-ruler) 0)
-  ; Can't use thread-first, hard to type-hint
-  (let [^HorizontalScrollView scrollview (.getChildAt zoom-layout 1)
-        ^ListView lv (.getChildAt scrollview 0)]
-    ; TODO find a more subtle way to invalidate these
-    (update-timeline-adapter (.getAdapter lv) (.getTag lv) timeline))
-  (.invalidate zoom-layout))
-
-(defmacro with-vp
-  [vp & body]
-  `(binding [*vp* ~vp]
-     ~@body))
-
-(defn make-timeline-adapter
-  []
-  (let [l ^List (ArrayList.)
-        act *activity*] 
-    [(proxy [ArrayAdapter] [^Context *activity* 0 l]
-       (getView [position convertView parent]
-         ; TODO change where seconds is calced
-         (with-activity
-           act
-           (with-vp
-             (@*activity* :vp)
-             (let [this ^ArrayAdapter this]
-               (track-view convertView
-                           (proxy-super getItem ^Integer position))))))) l]))
-
-; TODO should this be X-only?  It's doable.
-; scale to keep the
-; gestures focal point
-; at the same spot
-; unless we hit 0 ms
-; that works out to 
-; new-ms-offset = scale*ms-offset + ms-pos*(1.0f - scale)
-; mx = px*(mw/pw) + mo
-
-(defn transform-pix-to-ms
-  [px & {:keys [vp] :or {vp *vp*}}]
-  (+ (* px
-        (/ (vp :ms-window-start)
-           (vp :pixel-window-width)))
-     (vp :ms-window-start)))
-
-(defn vp-scaler
-  [sf fx]
-  (fn [vp]
-    (assoc vp
-           :ms-window-width
-           (/ (vp :ms-window-width) sf)
-           :ms-window-start
-           (+ (* sf (vp :ms-window-start))
-              (* (- 1.0 sf)
-                 (transform-pix-to-ms fx :vp vp))))))
-
-(defn vp-translater-pix
-  [dx]
-  (fn [vp] (update-in vp [:ms-window-start] + (scale-pix-to-ms dx :vp vp))))
-
-(declare modify-viewport)
-
-; TODO figure out how to trigger viewport modification from here
-; Really not sure what right way to structure is...
-(defn zoom-timeline-layout []
-  (let [rescale-from-detector
-        (fn [^ScaleGestureDetector detector]
-          (log-i (str "scale by factor "
-                      (.getScaleFactor detector)))
-          (modify-viewport
-            (vp-scaler (.getScaleFactor detector)
-                       (.getFocusX detector))))
-        ^ScaleGestureDetector sc-detector
-        (ScaleGestureDetector.
-          ^Context *activity*
-          ^ScaleGestureDetector$OnScaleGestureListener
-          (proxy [ScaleGestureDetector$OnScaleGestureListener] []
-            (onScaleBegin [sc-detector] (rescale-from-detector sc-detector))
-            (onScale [sc-detector] (rescale-from-detector sc-detector))
-            (onScaleEnd [sc-detector] (rescale-from-detector sc-detector))))
-        ^GestureDetector detector
-        (GestureDetector.
-          ^Context *activity*
-          ^GestureDetector$SimpleOnGestureListener
-          (proxy [GestureDetector$SimpleOnGestureListener] []
-            (onScroll [e1 e2d dx dy]
-              (modify-viewport (vp-translater-pix dx)))))]
-    (let [local-act *activity*]
-      (proxy [LinearLayout] [*activity*]
-        ; TODO do something more subtle than steal all events
-        (onInterceptTouchEvent [^MotionEvent ev]
-          (.onTouchEvent sc-detector ev)
-          (.isInProgress sc-detector))
-        (onTouchEvent [^MotionEvent ev]
-          (log-i "scaling-detecting proxy [LinearLayout] onTouchEvent")
-          ; TODO do we need to check the return values of these?
-          (.onTouchEvent sc-detector ev)
-          (.isInProgress sc-detector)
-          ; (.onTouchEvent detector ev)
-          ; Do we need to give proxy-super a shot?
-          ; (let [^LinearLayout this this]
-          ;  (proxy-super onTouchEvent ev))
-          )))))
-
-; For new, traverse whole structure and update all ui elements to match
-; This may/may not scale.
-; Hint, it doesn't scale.
-(defn update-ui-to-timeline
-  [ui timeline vp]
-  (with-vp vp
-    (doto
-      (if ui
-        ui ; TODO update path
-        (doto ^LinearLayout (zoom-timeline-layout)
-          (.setOrientation LinearLayout/VERTICAL)
-          (.addView (time-ruler))
-          (.addView 
-            (doto (HorizontalScrollView. *activity*)
-              (.setFocusable false)
-              (.setClickable false)
-              (.setHorizontalScrollBarEnabled false)
-              (.addView
-                (let [[adapter l] (make-timeline-adapter)]
-                  (doto (ListView. *activity*)
-                    (.setFocusable false)
-                    (.setClickable false)
-                    (.setAdapter adapter)
-                    (.setTag l))))))))
-      (update-zoom-timeline-layout timeline))))
-
-(defmacro wrap-cb-with-bindings
-  [cb & dyns]
-  (let [syms (repeatedly (count dyns) gensym)]
-    ; Use a let to shuttle some bindings to the inner closure
-  `(let [~@(interleave syms dyns)]
-     (fn [& args#]
-       (binding
-         [~@(interleave dyns syms)]
-         (apply ~cb args#))))))
-
-(defn update-ui-for-state []
-    (swap! (.state ^ImageEffectActivity *activity*) assoc :vc  
-      (apply update-ui-to-timeline 
-             (map @(.state ^ImageEffectActivity *activity*)
-                  [:vc :model :vp]))))
-
-(def min-vp-width-ms 50)
-(def max-vp-width-ms (hr2ms 24))
-(defn vp-validate
-  [vp]
-  ; We should only go so skinny
-  (-> (? vp)
-    (update-in [:ms-window-width] max min-vp-width-ms)
-    (update-in [:ms-window-width] min max-vp-width-ms)
-    (update-in [:ms-window-start] max 0)))
+(declare update-ui-for-state)
 
 (defn modify-viewport
   [vp-fn]
@@ -869,6 +499,37 @@
     .getHandler
     (.post (wrap-cb-with-bindings update-ui-for-state *activity*))))
 
+(defn update-ui-for-state []
+    (swap! (.state ^ImageEffectActivity *activity*) assoc :vc  
+      (apply update-ui-to-timeline modify-viewport
+             (map @(.state ^ImageEffectActivity *activity*)
+                  [:vc :model :vp]))))
+;
+; TODO is the order right for standard comparator semantics?
+(defn cmp-start-ms
+  [fst scd]
+  (-
+    (fst :start-ms)
+    (scd :start-ms)))
+
+(defn make-timeline
+  "A decent starting data-structure for tracks would be
+  a vector of tracks,
+  a track is mostly a sorted-map of start times to clips?
+  Clip is 'resource' + resource offset + length for now"
+  [xx]
+  (vec (for [x xx] (into (sorted-set-by cmp-start-ms) x))))
+;
+; Model!
+; TODO is txt field a keeper?  Maybe make fn...
+(def demo-timeline-structure
+  (make-timeline
+    [(for [s (range 10 400 10)]
+       {:start-ms (s2ms s) :length-ms (s2ms 5) :txt (str "T0C" s)})
+     (for [s (range 25 400 40)]
+       {:start-ms (s2ms s) :length-ms (s2ms 20) :txt (str "T1C" s)})
+     [{:start-ms (s2ms 18) :length-ms (s2ms 10) :txt "Clip 20"}]]))
+
 (defn -init
   []
   (log-i "Init called!")
@@ -879,8 +540,32 @@
   [this]
   @(.state ^ImageEffectActivity this))
 
+(def singleton (ref nil))
+
+(defn go! 
+  "Helper function to recreate UI using ugly singleton variable.
+  This is to reload the UI after code updates during development.
+  It's surprisingly hard to get a reference to an open activity!"
+  [] 
+  (log-i "queueing onCreate")
+  (on-ui
+    (log-i "restart onCreate")
+    (.recreate @singleton)))
+
+(defn bounce-scale
+  [view x]
+  (doto (ObjectAnimator/ofFloat view View/SCALE_X (into-array Float/TYPE [x]))
+    (.setDuration 300)
+    (.addListener
+      (proxy [AnimatorListenerAdapter] []
+        (onAnimationCancel [anim] nil)
+        (onAnimationEnd [anim]
+          (bounce-scale view (if (= x 1) 5 1)))))
+    (.start)))
+
 (defn -onCreate
   [^Activity this ^Bundle bundle] 
+  (dosync (ref-set singleton this))
   (with-activity this
     (log-i (str "this " this "bundle " bundle))
     (.superOnCreate this bundle)
@@ -895,13 +580,40 @@
     ; Start a base spot
     (reset! (.state ^ImageEffectActivity this) {:vc nil
                            :model demo-timeline-structure
-                           :vp {:pixel-window-width 700
+                           :vp {:pixel-window-width 
+                                (-> this
+                                    (.getWindowManager)
+                                    (.getDefaultDisplay)
+                                    (.getWidth))
                                 :ms-window-start 0
                                 :ms-window-width (s2ms 60)}})
     ; Save the initial UI
     (update-ui-for-state)
     ; Add the initial UI
-    (.addView ^ViewGroup (find-view R$id/timeline_spot) ^View (@*activity* :vc))
+    (.addView ^ViewGroup (find-view R$id/timeline_spot)
+              ^View (@*activity* :vc)
+              (ViewGroup$LayoutParams.
+                ViewGroup$LayoutParams/MATCH_PARENT
+                ViewGroup$LayoutParams/WRAP_CONTENT))
+    (.addView ^ViewGroup (find-view R$id/timeline_spot)
+              (doto (HorizontalScrollView. this)
+                (.addView
+                  (do-let [rel (RelativeLayout. this)]
+                          (doseq [x (range 10)
+                                  :let [params (RelativeLayout$LayoutParams.
+                                                 ViewGroup$LayoutParams/WRAP_CONTENT
+                                                 ViewGroup$LayoutParams/WRAP_CONTENT)]]
+                            (.addView rel (doto (TextView. this)
+                                            (.setSingleLine true)
+                                            (.setBackgroundColor Color/DKGRAY)
+                                            (.setText (apply str (repeat 3 (str x)))))
+                                      params)
+                            (set! (. params leftMargin) (* 100 x)))
+                          (bounce-scale rel 5))))
+              (ViewGroup$LayoutParams.
+                ViewGroup$LayoutParams/MATCH_PARENT
+                ViewGroup$LayoutParams/WRAP_CONTENT))
+    (log-i "onCreate after add timeline") ))
 
 ; TODO re-enable media playback
 ;    ((setup-filter-view this (find-view R$id/preview_surface))
@@ -916,5 +628,4 @@
       ;      ;(setup-video-view *activity*)
       ;      (setup-filter-view *activity*)
       ;      (fn [e res] (log-i (str e))))
-    (log-i "AfterMediaURI")))
 

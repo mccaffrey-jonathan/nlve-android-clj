@@ -27,6 +27,26 @@
          `(~~call-sym 
               (fn [~@'~args] ~@~body-sym))))))
 
+; TODO, is there some tidy way to do this without new code and macros?
+; Monads?  Continuations?
+(defmacro wrap-cb-with-bindings
+  "Capture the value of some dynamic variables as this is called
+  and bind them when the inner call-back is called.
+
+  This can be used to carry dynamic variable bindings along with a call-back"
+  [cb & dyns]
+  (let [syms (repeatedly (count dyns) gensym)]
+    ; Use a let to shuttle some bindings to the inner closure
+  `(let [~@(interleave syms dyns)]
+     (fn [& args#]
+       (binding
+         [~@(interleave dyns syms)]
+         (apply ~cb args#))))))
+
+(defn indexed
+  [xs]
+  (map vector (range) xs))
+
 (defmacro do-let
   "Bind init-expr to binding-form, then execute body,
   then return the binding-form.  It is assumed that body will
@@ -113,3 +133,4 @@
     (.order (ByteOrder/nativeOrder))
     (.put (byte-array (map ubyte-ify in)))
     (.position 0)))
+

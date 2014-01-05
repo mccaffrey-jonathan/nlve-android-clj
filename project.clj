@@ -34,12 +34,13 @@
             ;; Uncomment this if dexer fails with
             ;; OutOfMemoryException. Set the value according to your
             ;; available RAM.
-            ;; :dex-opts ["-JXmx4096M"]
+            :dex-opts ["-JXmx2048M"]
 
             ;; If previous option didn't work, uncomment this as well.
             ;; :force-dex-optimize true
 
             ; TODO remove me before production
             :start-nrepl-server 1
+
             :target-version "16"
             :aot-exclude-ns ["clojure.parallel" "clojure.core.reducers"]})
