@@ -36,6 +36,7 @@
     [java.nio ByteBuffer IntBuffer ByteOrder]
     [javax.microedition.khronos.egl EGLContext EGL10 EGL]
     [java.util ArrayList Collection])
+  (:require [com.mccaffrey.nlve TimelineView])
   (:use [neko activity context find-view init log resource threading ui]
         [neko.listeners view]
         [neko.ui mapping]
@@ -501,10 +502,14 @@
 
 (defn update-ui-for-state []
     (swap! (.state ^ImageEffectActivity *activity*) assoc :vc  
-      (apply update-ui-to-timeline modify-viewport
-             (map @(.state ^ImageEffectActivity *activity*)
-                  [:vc :model :vp]))))
-;
+           (apply TimelineView/update-ui *activity*
+               (map @(.state ^ImageEffectActivity *activity*)
+                  [:vc :model]))))
+
+;      (apply update-ui-to-timeline modify-viewport
+;             (map @(.state ^ImageEffectActivity *activity*)
+;                  [:vc :model :vp]))))
+     
 ; TODO is the order right for standard comparator semantics?
 (defn cmp-start-ms
   [fst scd]
@@ -552,16 +557,6 @@
     (log-i "restart onCreate")
     (.recreate @singleton)))
 
-(defn bounce-scale
-  [view x]
-  (doto (ObjectAnimator/ofFloat view View/SCALE_X (into-array Float/TYPE [x]))
-    (.setDuration 300)
-    (.addListener
-      (proxy [AnimatorListenerAdapter] []
-        (onAnimationCancel [anim] nil)
-        (onAnimationEnd [anim]
-          (bounce-scale view (if (= x 1) 5 1)))))
-    (.start)))
 
 (defn -onCreate
   [^Activity this ^Bundle bundle] 
@@ -592,24 +587,6 @@
     ; Add the initial UI
     (.addView ^ViewGroup (find-view R$id/timeline_spot)
               ^View (@*activity* :vc)
-              (ViewGroup$LayoutParams.
-                ViewGroup$LayoutParams/MATCH_PARENT
-                ViewGroup$LayoutParams/WRAP_CONTENT))
-    (.addView ^ViewGroup (find-view R$id/timeline_spot)
-              (doto (HorizontalScrollView. this)
-                (.addView
-                  (do-let [rel (RelativeLayout. this)]
-                          (doseq [x (range 10)
-                                  :let [params (RelativeLayout$LayoutParams.
-                                                 ViewGroup$LayoutParams/WRAP_CONTENT
-                                                 ViewGroup$LayoutParams/WRAP_CONTENT)]]
-                            (.addView rel (doto (TextView. this)
-                                            (.setSingleLine true)
-                                            (.setBackgroundColor Color/DKGRAY)
-                                            (.setText (apply str (repeat 3 (str x)))))
-                                      params)
-                            (set! (. params leftMargin) (* 100 x)))
-                          (bounce-scale rel 5))))
               (ViewGroup$LayoutParams.
                 ViewGroup$LayoutParams/MATCH_PARENT
                 ViewGroup$LayoutParams/WRAP_CONTENT))
