@@ -2,7 +2,11 @@
   (:import [android.animation AnimatorListenerAdapter ObjectAnimator]
            [android.graphics Color]
            [android.view 
+            MotionEvent
+            ScaleGestureDetector
+            ScaleGestureDetector$OnScaleGestureListener
             View
+            View$OnTouchListener
             ViewGroup
             ViewGroup$LayoutParams]
            [android.widget
@@ -52,11 +56,11 @@
   [^ViewGroup vg model add-view-fn]
   (let [model-cnt (count model)
         view-cnt (.getChildCount vg)
-        extra-view-cnt (- view-track-cnt model-track-cnt)]
+        extra-view-cnt (- view-cnt model-cnt)]
     (if (> extra-view-cnt 0)
       (.removeViews vg model-cnt extra-view-cnt))
     ; May be an empty range
-    (doseq [i (range model-cnt view-cnt)]
+    (doseq [i (range view-cnt model-cnt)]
       (add-view-fn vg i))))
 
 (defn add-clip-view
@@ -82,12 +86,13 @@
                       (+ (.getScaleX zoomer)
                          (.getScaleFactor sc-detector))))
         sc-detector
+        (ScaleGestureDetector. *activity*
           (proxy [ScaleGestureDetector$OnScaleGestureListener] []
-            (onScaleBegin [sc-detector] (rescalesc-detector))
+            (onScaleBegin [sc-detector] (rescale-from-detector sc-detector))
             (onScale [sc-detector] (rescale-from-detector sc-detector))
-            (onScaleEnd [sc-detector] (rescale-from-detector sc-detector)))]
+            (onScaleEnd [sc-detector] (rescale-from-detector sc-detector))))]
     (proxy [View$OnTouchListener] []
-      (onTouch [_ ev]
+      (onTouch [_ ^MotionEvent ev]
           (.onTouchEvent sc-detector ev)
           (.isInProgress sc-detector)))))
 
@@ -103,14 +108,18 @@
                   (.getWidth))
         scroller (or ui
                      (do-let [hsv (HorizontalScrollView. *activity*)]
+                       (.setContentDescription hsv "Top-level ScrollView for timeline")
                        (.addView hsv
                                  (doto (RelativeLayout. *activity*)
+                                   (.setContentDescription "RelativeLayout to scale timeline")
                                    (.setScaleX (/ pix-w (s2ms 30)))
                                    (.addView
                                      (doto (LinearLayout. *activity*)
+                                       (.setContentDescription "vertical LinearLayout of individual tracks")
                                        (.setOrientation LinearLayout/VERTICAL)))))
                        (.setOnTouchListener hsv (zoom-listener hsv))))
-        track-views (-> scroller (.getChildAt 0) (getChildAt 0))]
+        track-views (-> scroller (.getChildAt 0) (.getChildAt 0))]
+    (? track-views)
     (adjust-view-group-to-model! track-views model
                                  (fn [vg i]
                                    (.addView vg (RelativeLayout. *activity*))))
@@ -122,5 +131,6 @@
               :let [cv (.getChildAt rel j)
                     params ^RelativeLayout$LayoutParams (.getLayoutParams cv)]]
         (.setContentDescription cv (clip :txt))
-        (set! (. params width (clip :length-ms)))
-        (set! (. params leftMargin (clip :start-ms)))))))
+        (set! (. params width) (clip :length-ms))
+        (set! (. params leftMargin) (clip :start-ms))))
+    scroller))

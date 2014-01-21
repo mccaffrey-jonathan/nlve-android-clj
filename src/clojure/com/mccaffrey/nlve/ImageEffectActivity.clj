@@ -36,7 +36,7 @@
     [java.nio ByteBuffer IntBuffer ByteOrder]
     [javax.microedition.khronos.egl EGLContext EGL10 EGL]
     [java.util ArrayList Collection])
-  (:require [com.mccaffrey.nlve TimelineView])
+  (:require [com.mccaffrey.nlve [TimelineView :as TimelineView]])
   (:use [neko activity context find-view init log resource threading ui]
         [neko.listeners view]
         [neko.ui mapping]
@@ -502,7 +502,7 @@
 
 (defn update-ui-for-state []
     (swap! (.state ^ImageEffectActivity *activity*) assoc :vc  
-           (apply TimelineView/update-ui *activity*
+           (apply TimelineView/update-ui
                (map @(.state ^ImageEffectActivity *activity*)
                   [:vc :model]))))
 
